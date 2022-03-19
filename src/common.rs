@@ -1,4 +1,4 @@
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -13,8 +13,12 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     str::FromStr,
 };
+use std::collections::HashMap;
 use tokio::io::{AsyncRead, AsyncWrite};
 use std::sync::{Arc, Mutex};
+use crate::{ConnectionStatus, ConnectionStatusCode};
+
+type ConStatus = Arc<Mutex<HashMap<u16, ConnectionStatus>>>;
 
 /// Address type in socks5.
 #[derive(Debug, Clone)]
@@ -236,7 +240,7 @@ pub enum TcpOrDestination {
     Dest(String),
 }
 
-pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> Result<(), Error> {
+pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_status_map: Arc<Mutex<HashMap<u16, ConnectionStatus>>>) -> Result<(), Error> {
     let mut ws;
     let tcp;
 
@@ -288,6 +292,8 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
         }
     }
 
+    let tcp_remote_port = tcp.peer_addr().unwrap().port();
+
     // We got the tcp connection setup, split both streams in their read and write parts
     let (mut dest_read, mut dest_write) = tcp.into_split();
     let (mut write, mut read) = ws.split();
@@ -297,6 +303,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
     let address = Arc::new(Mutex::new(String::from("xxx")));
 
     let address1 = address.clone();
+    let con_status_map1 = con_status_map.clone();
     // Consume from the websocket, if this loop quits, we return both things we took ownership of.
     let task_ws_to_tcp = tokio::spawn(async move {
         loop {
@@ -326,6 +333,12 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                             if dest_write.write(x).await.is_err() {
                                 break;
                             };
+
+                            let con_ = con_status_map1.clone();
+                            let mut status = con_.lock().unwrap();
+                            if status.contains_key(&tcp_remote_port) {
+                                status.get_mut(&tcp_remote_port).unwrap().bytes_got += x.len() as u32;
+                            }
                         }
                         Message::Close(m) => {
                             trace!("Encountered close message {:?}", m);
@@ -353,6 +366,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
     });
 
     let address2 = address.clone();
+    let con_status_map2 = con_status_map.clone();
     // Consume from the tcp socket and write on the websocket.
     let task_tcp_to_ws = tokio::spawn(async move {
         let mut need_close = true;
@@ -378,7 +392,17 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                                 let addr_str = Address::read_from_buf(&buf, 3).await.unwrap().to_string();
                                 let mut value = addr.lock().unwrap();
                                 // *value = "abc".to_string();
-                                *value =addr_str;
+                                *value = addr_str.clone();
+
+                                if addr_str.contains("canhazip.com") {
+                                    info!("{:?}", con_status_map2.lock().unwrap());
+                                }
+
+                                let con_ = con_status_map2.clone();
+                                let mut status = con_.lock().unwrap();
+                                if status.contains_key(&tcp_remote_port) {
+                                    status.get_mut(&tcp_remote_port).unwrap().address = addr_str.clone();
+                                }
 
                                 // debug!("{}", addr);
                             }
@@ -472,6 +496,10 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
             }
         }
         debug!("Properly closed connections.");
+
+        let con_ = con_status_map.clone();
+        let mut con = con_.lock().unwrap();
+        con.remove(&tcp_remote_port);
     });
 
     Ok(())
@@ -482,7 +510,7 @@ pub enum Direction {
     TcpToWs,
 }
 
-pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction) -> Result<(), Error> {
+pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction, con_status_map: ConStatus) -> Result<(), Error> {
     let listener = TcpListener::bind(bind_location)
         .await
         .expect("Could not bind to port");
@@ -522,10 +550,19 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction) ->
                     "Accepting tcp connection from {:?}",
                     socket.peer_addr().unwrap()
                 );
+                let connection_status = ConnectionStatus {
+                    status: ConnectionStatusCode::NEW,
+                    address: String::new(),
+                    bytes_got: 0,
+                    bytes_sent: 0
+                };
+                let con_status_map_ = con_status_map.clone();
+                let mut status = con_status_map_.lock().unwrap();
+                status.insert(socket.peer_addr().unwrap().port(), connection_status);
                 TcpOrDestination::Tcp(socket)
             }
         };
-        match communicate(in1, in2).await {
+        match communicate(in1, in2, con_status_map.clone()).await {
             Ok(_v) => {
                 info!("Succesfully setup communication.");
             }
