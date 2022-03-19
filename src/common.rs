@@ -13,7 +13,6 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     str::FromStr,
 };
-use std::fmt::Display;
 use tokio::io::{AsyncRead, AsyncWrite};
 use std::sync::{Arc, Mutex};
 
@@ -166,12 +165,12 @@ impl Address {
                 Address::SocketAddr(SocketAddr::new(ip.into(), port))
             }
             3 => {
-                let mut len = buf[offset+1];
+                let len = buf[offset+1];
                 let len_size = len as usize;
                 let mut domain = vec![0u8; len_size];
                 domain.copy_from_slice(&buf[offset + 1 + 1..offset + 1 + 1 + len_size]);
 
-                let domain = String::from_utf8(domain).map_err(|e| "invalid domain")?;
+                let domain = String::from_utf8(domain).map_err(|_e| "invalid domain")?;
 
                 let mut port_buf = [0u8; 2];
                 port_buf.copy_from_slice(&buf[offset + 1 + 1 + len_size..offset + 1 + 1 + len_size + 2]);
@@ -215,7 +214,7 @@ impl Address {
                 reader.read_exact(&mut domain).await?;
 
                 let domain =
-                    String::from_utf8(domain).map_err(|e| Error::from("invalid domain"))?;
+                    String::from_utf8(domain).map_err(|_e| Error::from("invalid domain"))?;
 
                 Address::Domain(domain, Self::read_port(&mut reader).await?)
             }
@@ -319,6 +318,11 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                     };
                     match data {
                         Message::Binary(ref x) => {
+                            let addr = Arc::clone(&address1);
+                            debug!("Got {} bytes from {}", x.len(), addr.lock().unwrap());
+                            if x.len() < 11 {
+                                debug!("Got {:?}", x);
+                            }
                             if dest_write.write(x).await.is_err() {
                                 break;
                             };
@@ -340,7 +344,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                 }
             }
         }
-        debug!("Reached end of consume from websocket.");
+        debug!("Reached end of consume from websocket. {}", address1.lock().unwrap());
         if let Err(_) = shutdown_from_ws_tx.send(true) {
             // This happens if the shutdown happens from the other side.
             // error!("Could not send shutdown signal: {:?}", v);
@@ -360,16 +364,15 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                     // we want to initiate shutting down the websocket.
                     match res {
                         Ok(0) => {
-                            debug!("Remote tcp socket has closed, sending close message on websocket.");
+                            let addr = Arc::clone(&address2);
+                            debug!("Remote tcp socket has closed, sending close message on websocket. {}", addr.lock().unwrap());
                             break;
                         }
                         Ok(n) => {
-                            let addr = Arc::clone(&address2);
-                            debug!("read {} bytes from {}", n, addr.lock().unwrap());
-                            if (n < 11) {
-                                debug!("{:?}", &buf[0..n]);
+                            if n < 11 {
+                                debug!("Send {:?}", &buf[0..n]);
                             }
-                            if (n > 3 && buf[0] == 5 && buf[1] == 1) {
+                            if n > 3 && buf[0] == 5 && buf[1] == 1 {
                                 // buf[2] reserved
                                 let addr = Arc::clone(&address2);
                                 let addr_str = Address::read_from_buf(&buf, 3).await.unwrap().to_string();
@@ -379,6 +382,8 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
 
                                 // debug!("{}", addr);
                             }
+                            let addr = Arc::clone(&address2);
+                            debug!("send {} bytes to {}", n, addr.lock().unwrap());
                             let res = buf[..n].to_vec();
                             match write.send(Message::Binary(res)).await {
                                 Ok(_) => {
@@ -419,7 +424,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
             // This happens if the shutdown happens from the other side.
             // error!("Could not send shutdown signal: {:?}", v);
         }
-        debug!("Reached end of consume from tcp.");
+        debug!("Reached end of consume from tcp. {}", address.lock().unwrap());
         (dest_read, write, need_close)
     });
 
@@ -477,7 +482,7 @@ pub enum Direction {
     TcpToWs,
 }
 
-pub async fn serve(bind_location: &str, dest_location: &str, dir: Direction) -> Result<(), Error> {
+pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction) -> Result<(), Error> {
     let listener = TcpListener::bind(bind_location)
         .await
         .expect("Could not bind to port");

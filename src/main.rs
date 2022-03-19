@@ -3,7 +3,7 @@ use clap::{App, Arg};
 use tokio;
 
 use env_logger::{Builder, WriteStyle};
-use log::LevelFilter;
+use log::{LevelFilter, info, error};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -95,8 +95,10 @@ fn main() -> Result<(), Error> {
     };
 
     rt.block_on(async {
-        let res = common::serve(bind_value, dest_value, direction).await;
-        panic!("Serve returned with {:?}", res);
+        loop {
+            let res = common::serve(bind_value, dest_value, &direction).await;
+            error!("Serve returned with {:?}", res);
+        }
     });
 
     Ok(())
