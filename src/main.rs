@@ -1,13 +1,36 @@
+use std::collections::HashMap;
 use clap::{App, Arg};
 
 use tokio;
 
 use env_logger::{Builder, WriteStyle};
-use log::{LevelFilter, info, error};
+use log::{LevelFilter, error};
 
 type Error = Box<dyn std::error::Error>;
 
 mod common;
+
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+
+#[derive(Debug)]
+pub enum ConnectionStatusCode {
+    NEW,
+    CONNECTED,
+    ERROR,
+    CLOSED
+}
+
+#[derive(Debug)]
+pub struct ConnectionStatus {
+    status: ConnectionStatusCode,
+    address: String,
+    last_active: SystemTime,
+    bytes_got: u32,
+    bytes_sent: u32
+}
+
+// type ConStatus = Arc<Mutex<HashMap<u16, ConnectionStatus>>>;
 
 // helpful example; https://github.com/snapview/tokio-tungstenite/issues/137
 
@@ -94,9 +117,11 @@ fn main() -> Result<(), Error> {
         }
     };
 
+    let con_status_map = Arc::new(Mutex::new(HashMap::new()));
+
     rt.block_on(async {
         loop {
-            let res = common::serve(bind_value, dest_value, &direction).await;
+            let res = common::serve(bind_value, dest_value, &direction, con_status_map.clone()).await;
             error!("Serve returned with {:?}", res);
         }
     });

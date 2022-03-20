@@ -1,4 +1,4 @@
-use futures_util::StreamExt;
+use futures_util::{StreamExt};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -13,8 +13,14 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     str::FromStr,
 };
+use std::collections::HashMap;
 use tokio::io::{AsyncRead, AsyncWrite};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+use crate::{ConnectionStatus, ConnectionStatusCode};
+use crate::ConnectionStatusCode::CONNECTED;
+
+type ConStatus = Arc<Mutex<HashMap<u16, ConnectionStatus>>>;
 
 /// Address type in socks5.
 #[derive(Debug, Clone)]
@@ -82,12 +88,14 @@ impl FromStr for Address {
 
 impl Address {
     /// Convert `Address` to `SocketAddr`. If `Address` is a domain, return `std::io::ErrorKind::InvalidInput`
+    #[allow(dead_code)]
     pub fn to_socket_addr(self) -> Result<SocketAddr, Error> {
         match self {
             Address::SocketAddr(s) => Ok(s),
             _ => Err(Error::from("invalid input")),
         }
     }
+    #[allow(dead_code)]
     async fn read_port<R>(mut reader: R) -> Result<u16, Error>
         where
             R: AsyncRead + Unpin,
@@ -97,6 +105,7 @@ impl Address {
         let port = u16::from_be_bytes(buf);
         Ok(port)
     }
+    #[allow(dead_code)]
     async fn write_port<W>(mut writer: W, port: u16) -> Result<(), Error>
         where
             W: AsyncWrite + Unpin,
@@ -105,6 +114,7 @@ impl Address {
         Ok(())
     }
     /// Length of `Address` in bytes after serialized.
+    #[allow(dead_code)]
     pub fn serialized_len(&self) -> Result<usize, Error> {
         Ok(match self {
             Address::SocketAddr(SocketAddr::V4(_)) => {
@@ -125,6 +135,7 @@ impl Address {
         })
     }
     /// Write `Address` to `AsyncWrite`.
+    #[allow(dead_code)]
     pub async fn write<W>(&self, mut writer: W) -> Result<(), Error>
         where
             W: AsyncWrite + Unpin,
@@ -190,6 +201,7 @@ impl Address {
     }
 
     /// Read `Address` from `AsyncRead`.
+    #[allow(dead_code)]
     pub async fn read<R>(mut reader: R) -> Result<Self, Error>
         where
             R: AsyncRead + Unpin,
@@ -236,7 +248,7 @@ pub enum TcpOrDestination {
     Dest(String),
 }
 
-pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> Result<(), Error> {
+pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_status_map: Arc<Mutex<HashMap<u16, ConnectionStatus>>>) -> Result<(), Error> {
     let mut ws;
     let tcp;
 
@@ -288,6 +300,8 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
         }
     }
 
+    let tcp_remote_port = tcp.peer_addr().unwrap().port();
+
     // We got the tcp connection setup, split both streams in their read and write parts
     let (mut dest_read, mut dest_write) = tcp.into_split();
     let (mut write, mut read) = ws.split();
@@ -297,6 +311,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
     let address = Arc::new(Mutex::new(String::from("xxx")));
 
     let address1 = address.clone();
+    let con_status_map1 = con_status_map.clone();
     // Consume from the websocket, if this loop quits, we return both things we took ownership of.
     let task_ws_to_tcp = tokio::spawn(async move {
         loop {
@@ -318,14 +333,26 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                     };
                     match data {
                         Message::Binary(ref x) => {
-                            let addr = Arc::clone(&address1);
-                            debug!("Got {} bytes from {}", x.len(), addr.lock().unwrap());
+                            let _addr = Arc::clone(&address1);
+                            // debug!("Got {} bytes from {}", x.len(), addr.lock().unwrap());
                             if x.len() < 11 {
                                 debug!("Got {:?}", x);
                             }
                             if dest_write.write(x).await.is_err() {
                                 break;
                             };
+
+                            let con_map = con_status_map1.clone();
+                            let mut status = con_map.lock().unwrap();
+                            if status.contains_key(&tcp_remote_port) {
+                                let status = status.get_mut(&tcp_remote_port).unwrap();
+                                status.bytes_got += x.len() as u32;
+                                if x.len() == 2 && x[0] == 5 && x[1] == 0 {
+                                    // handshake ack
+                                    status.status = CONNECTED;
+                                    status.last_active = SystemTime::now();
+                                }
+                            }
                         }
                         Message::Close(m) => {
                             trace!("Encountered close message {:?}", m);
@@ -353,6 +380,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
     });
 
     let address2 = address.clone();
+    let con_status_map2 = con_status_map.clone();
     // Consume from the tcp socket and write on the websocket.
     let task_tcp_to_ws = tokio::spawn(async move {
         let mut need_close = true;
@@ -372,18 +400,47 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                             if n < 11 {
                                 debug!("Send {:?}", &buf[0..n]);
                             }
+
+                            {
+                                let con_map = con_status_map2.clone();
+                                let mut status = con_map.lock().unwrap();
+                                if status.contains_key(&tcp_remote_port) {
+                                    let status = status.get_mut(&tcp_remote_port).unwrap();
+                                    status.bytes_sent += n as u32;
+                                }
+                            }
+
                             if n > 3 && buf[0] == 5 && buf[1] == 1 {
                                 // buf[2] reserved
                                 let addr = Arc::clone(&address2);
                                 let addr_str = Address::read_from_buf(&buf, 3).await.unwrap().to_string();
                                 let mut value = addr.lock().unwrap();
                                 // *value = "abc".to_string();
-                                *value =addr_str;
+                                *value = addr_str.clone();
+
+                                info!("Connecting {}. remote port {}", addr_str.clone(), tcp_remote_port);
+
+                                {
+                                    let con_map = con_status_map2.clone();
+                                    let mut status = con_map.lock().unwrap();
+                                    if status.contains_key(&tcp_remote_port) {
+                                        let status = status.get_mut(&tcp_remote_port).unwrap();
+                                        status.address = addr_str.clone();
+                                    }
+                                }
 
                                 // debug!("{}", addr);
+
+                                if addr_str.contains("canhazip.com") {
+                                    // info!("{:?}", con_status_map2.lock().unwrap());
+                                    let con_map = con_status_map2.lock().unwrap();
+                                    for key in con_map.keys() {
+                                        info!("{}: {:?}", key, con_map.get(key).unwrap());
+                                    }
+                                }
                             }
-                            let addr = Arc::clone(&address2);
-                            debug!("send {} bytes to {}", n, addr.lock().unwrap());
+                            let _addr = Arc::clone(&address2);
+                            // debug!("send {} bytes to {}", n, addr.lock().unwrap());
                             let res = buf[..n].to_vec();
                             match write.send(Message::Binary(res)).await {
                                 Ok(_) => {
@@ -472,6 +529,10 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
             }
         }
         debug!("Properly closed connections.");
+
+        let con_map = con_status_map.clone();
+        let mut con = con_map.lock().unwrap();
+        con.remove(&tcp_remote_port);
     });
 
     Ok(())
@@ -482,7 +543,7 @@ pub enum Direction {
     TcpToWs,
 }
 
-pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction) -> Result<(), Error> {
+pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction, con_status_map: ConStatus) -> Result<(), Error> {
     let listener = TcpListener::bind(bind_location)
         .await
         .expect("Could not bind to port");
@@ -518,14 +579,32 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction) ->
                     .accept()
                     .await
                     .expect("Could not accept connection?");
+                let peer_addr = match socket.peer_addr() {
+                    Ok(addr)=> addr,
+                    Err(error)=> {
+                        error!("{}", error);
+                        return Err(Box::new(error));
+                    }
+                };
+
                 info!(
                     "Accepting tcp connection from {:?}",
-                    socket.peer_addr().unwrap()
+                    peer_addr
                 );
+                let connection_status = ConnectionStatus {
+                    status: ConnectionStatusCode::NEW,
+                    address: String::new(),
+                    last_active: SystemTime::now(),
+                    bytes_got: 0,
+                    bytes_sent: 0
+                };
+                let con_status_map_ = con_status_map.clone();
+                let mut status = con_status_map_.lock().unwrap();
+                status.insert(socket.peer_addr().unwrap().port(), connection_status);
                 TcpOrDestination::Tcp(socket)
             }
         };
-        match communicate(in1, in2).await {
+        match communicate(in1, in2, con_status_map.clone()).await {
             Ok(_v) => {
                 info!("Succesfully setup communication.");
             }
