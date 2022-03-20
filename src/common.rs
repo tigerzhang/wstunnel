@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use tokio::io::{AsyncRead, AsyncWrite};
 use std::sync::{Arc, Mutex};
 use crate::{ConnectionStatus, ConnectionStatusCode};
+use crate::ConnectionStatusCode::CONNECTED;
 
 type ConStatus = Arc<Mutex<HashMap<u16, ConnectionStatus>>>;
 
@@ -326,7 +327,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                     match data {
                         Message::Binary(ref x) => {
                             let addr = Arc::clone(&address1);
-                            debug!("Got {} bytes from {}", x.len(), addr.lock().unwrap());
+                            // debug!("Got {} bytes from {}", x.len(), addr.lock().unwrap());
                             if x.len() < 11 {
                                 debug!("Got {:?}", x);
                             }
@@ -337,7 +338,12 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                             let con_ = con_status_map1.clone();
                             let mut status = con_.lock().unwrap();
                             if status.contains_key(&tcp_remote_port) {
-                                status.get_mut(&tcp_remote_port).unwrap().bytes_got += x.len() as u32;
+                                let status = status.get_mut(&tcp_remote_port).unwrap();
+                                status.bytes_got += x.len() as u32;
+                                if x.len() == 2 && x[0] == 5 && x[1] == 0 {
+                                    // handshake ack
+                                    status.status = CONNECTED;
+                                }
                             }
                         }
                         Message::Close(m) => {
@@ -386,6 +392,16 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                             if n < 11 {
                                 debug!("Send {:?}", &buf[0..n]);
                             }
+
+                            {
+                                let con_ = con_status_map2.clone();
+                                let mut status = con_.lock().unwrap();
+                                if status.contains_key(&tcp_remote_port) {
+                                    let status = status.get_mut(&tcp_remote_port).unwrap();
+                                    status.bytes_sent += n as u32;
+                                }
+                            }
+
                             if n > 3 && buf[0] == 5 && buf[1] == 1 {
                                 // buf[2] reserved
                                 let addr = Arc::clone(&address2);
@@ -394,20 +410,26 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                                 // *value = "abc".to_string();
                                 *value = addr_str.clone();
 
-                                if addr_str.contains("canhazip.com") {
-                                    info!("{:?}", con_status_map2.lock().unwrap());
-                                }
+                                info!("Connecting {}. remote port {}", addr_str.clone(), tcp_remote_port);
 
                                 let con_ = con_status_map2.clone();
                                 let mut status = con_.lock().unwrap();
                                 if status.contains_key(&tcp_remote_port) {
-                                    status.get_mut(&tcp_remote_port).unwrap().address = addr_str.clone();
+                                    let status = status.get_mut(&tcp_remote_port).unwrap();
+                                    status.address = addr_str.clone();
                                 }
-
                                 // debug!("{}", addr);
+
+                                // if addr_str.contains("canhazip.com") {
+                                //     // info!("{:?}", con_status_map2.lock().unwrap());
+                                //     let con_ = con_status_map2.lock().unwrap();
+                                //     for key in con_.keys() {
+                                //         info!("{}: {:?}", key, con_.get(key).unwrap());
+                                //     }
+                                // }
                             }
                             let addr = Arc::clone(&address2);
-                            debug!("send {} bytes to {}", n, addr.lock().unwrap());
+                            // debug!("send {} bytes to {}", n, addr.lock().unwrap());
                             let res = buf[..n].to_vec();
                             match write.send(Message::Binary(res)).await {
                                 Ok(_) => {
