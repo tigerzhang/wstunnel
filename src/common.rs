@@ -1,4 +1,4 @@
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::{StreamExt};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -16,6 +16,7 @@ use std::{
 use std::collections::HashMap;
 use tokio::io::{AsyncRead, AsyncWrite};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 use crate::{ConnectionStatus, ConnectionStatusCode};
 use crate::ConnectionStatusCode::CONNECTED;
 
@@ -87,12 +88,14 @@ impl FromStr for Address {
 
 impl Address {
     /// Convert `Address` to `SocketAddr`. If `Address` is a domain, return `std::io::ErrorKind::InvalidInput`
+    #[allow(dead_code)]
     pub fn to_socket_addr(self) -> Result<SocketAddr, Error> {
         match self {
             Address::SocketAddr(s) => Ok(s),
             _ => Err(Error::from("invalid input")),
         }
     }
+    #[allow(dead_code)]
     async fn read_port<R>(mut reader: R) -> Result<u16, Error>
         where
             R: AsyncRead + Unpin,
@@ -102,6 +105,7 @@ impl Address {
         let port = u16::from_be_bytes(buf);
         Ok(port)
     }
+    #[allow(dead_code)]
     async fn write_port<W>(mut writer: W, port: u16) -> Result<(), Error>
         where
             W: AsyncWrite + Unpin,
@@ -110,6 +114,7 @@ impl Address {
         Ok(())
     }
     /// Length of `Address` in bytes after serialized.
+    #[allow(dead_code)]
     pub fn serialized_len(&self) -> Result<usize, Error> {
         Ok(match self {
             Address::SocketAddr(SocketAddr::V4(_)) => {
@@ -130,6 +135,7 @@ impl Address {
         })
     }
     /// Write `Address` to `AsyncWrite`.
+    #[allow(dead_code)]
     pub async fn write<W>(&self, mut writer: W) -> Result<(), Error>
         where
             W: AsyncWrite + Unpin,
@@ -195,6 +201,7 @@ impl Address {
     }
 
     /// Read `Address` from `AsyncRead`.
+    #[allow(dead_code)]
     pub async fn read<R>(mut reader: R) -> Result<Self, Error>
         where
             R: AsyncRead + Unpin,
@@ -326,7 +333,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                     };
                     match data {
                         Message::Binary(ref x) => {
-                            let addr = Arc::clone(&address1);
+                            let _addr = Arc::clone(&address1);
                             // debug!("Got {} bytes from {}", x.len(), addr.lock().unwrap());
                             if x.len() < 11 {
                                 debug!("Got {:?}", x);
@@ -343,6 +350,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                                 if x.len() == 2 && x[0] == 5 && x[1] == 0 {
                                     // handshake ack
                                     status.status = CONNECTED;
+                                    status.last_active = SystemTime::now();
                                 }
                             }
                         }
@@ -431,7 +439,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                                     }
                                 }
                             }
-                            let addr = Arc::clone(&address2);
+                            let _addr = Arc::clone(&address2);
                             // debug!("send {} bytes to {}", n, addr.lock().unwrap());
                             let res = buf[..n].to_vec();
                             match write.send(Message::Binary(res)).await {
@@ -578,6 +586,7 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction, co
                 let connection_status = ConnectionStatus {
                     status: ConnectionStatusCode::NEW,
                     address: String::new(),
+                    last_active: SystemTime::now(),
                     bytes_got: 0,
                     bytes_sent: 0
                 };

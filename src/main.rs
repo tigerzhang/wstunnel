@@ -4,13 +4,14 @@ use clap::{App, Arg};
 use tokio;
 
 use env_logger::{Builder, WriteStyle};
-use log::{LevelFilter, info, error};
+use log::{LevelFilter, error};
 
 type Error = Box<dyn std::error::Error>;
 
 mod common;
 
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 #[derive(Debug)]
 pub enum ConnectionStatusCode {
@@ -24,11 +25,12 @@ pub enum ConnectionStatusCode {
 pub struct ConnectionStatus {
     status: ConnectionStatusCode,
     address: String,
+    last_active: SystemTime,
     bytes_got: u32,
     bytes_sent: u32
 }
 
-type ConStatus = Arc<Mutex<HashMap<u16, ConnectionStatus>>>;
+// type ConStatus = Arc<Mutex<HashMap<u16, ConnectionStatus>>>;
 
 // helpful example; https://github.com/snapview/tokio-tungstenite/issues/137
 
@@ -115,7 +117,7 @@ fn main() -> Result<(), Error> {
         }
     };
 
-    let mut con_status_map = Arc::new(Mutex::new(HashMap::new()));
+    let con_status_map = Arc::new(Mutex::new(HashMap::new()));
 
     rt.block_on(async {
         loop {
