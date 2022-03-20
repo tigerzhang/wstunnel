@@ -101,7 +101,7 @@ async fn main() -> Result<(), Error>{
             clap::ErrorKind::EmptyValue,
         )).unwrap();
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    // let rt = tokio::runtime::Runtime::new().unwrap();
 
     let direction = match matches
         .value_of("mode")
@@ -116,23 +116,32 @@ async fn main() -> Result<(), Error>{
         }
     };
 
-    tokio::spawn(async {
+    let con_status_map = Arc::new(Mutex::new(HashMap::new()));
+    let con_status_map2 = con_status_map.clone();
+
+    tokio::spawn(async move {
         let hello = warp::path!("hello" / String)
             .map(|name| format!("Hello, {}!", name));
 
-        warp::serve(hello)
+        let stat = warp::path("stat")
+            .map(move || {
+                let con_map = con_status_map2.lock().unwrap();
+                let mut ret: String = String::new();
+                for key in con_map.keys() {
+                    ret += &*format!("{}: {:?}\n", key, con_map.get(key).unwrap());
+                }
+                ret
+            });
+
+        let routes = warp::get().and(hello.or(stat));
+
+        warp::serve(routes)
             .run(([127, 0, 0, 1], 3030))
             .await;
     });
 
-    let con_status_map = Arc::new(Mutex::new(HashMap::new()));
-
-    // rt.block_on(async {
-        loop {
-            let res = common::serve(bind_value, dest_value, &direction, con_status_map.clone()).await;
-            error!("Serve returned with {:?}", res);
-        }
-    // });
+    let res = common::serve(bind_value, dest_value, &direction, con_status_map.clone()).await;
+    error!("Serve returned with {:?}", res);
 
     Ok(())
 }
