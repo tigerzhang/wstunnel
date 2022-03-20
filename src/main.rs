@@ -12,6 +12,7 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
+use warp::Filter;
 
 #[derive(Debug)]
 pub enum ConnectionStatusCode {
@@ -34,7 +35,8 @@ pub struct ConnectionStatus {
 
 // helpful example; https://github.com/snapview/tokio-tungstenite/issues/137
 
-fn main() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Error>{
     let app = App::new("Websocket Bridge")
         .about("Allows bridging a TCP connection over a websocket.")
         .arg(
@@ -76,10 +78,7 @@ fn main() -> Result<(), Error> {
         3 => LevelFilter::Debug,
         4 => LevelFilter::Trace,
         _ => {
-            return Err(Box::new(clap::Error::with_description(
-                "Couldn't find dest value.",
-                clap::ErrorKind::EmptyValue,
-            )));
+            LevelFilter::Info
         }
     };
 
@@ -93,14 +92,14 @@ fn main() -> Result<(), Error> {
         .ok_or(clap::Error::with_description(
             "Couldn't find bind value.",
             clap::ErrorKind::EmptyValue,
-        ))?;
+        )).unwrap();
 
     let dest_value = matches
         .value_of("dest")
         .ok_or(clap::Error::with_description(
             "Couldn't find dest value.",
             clap::ErrorKind::EmptyValue,
-        ))?;
+        )).unwrap();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -117,14 +116,23 @@ fn main() -> Result<(), Error> {
         }
     };
 
+    tokio::spawn(async {
+        let hello = warp::path!("hello" / String)
+            .map(|name| format!("Hello, {}!", name));
+
+        warp::serve(hello)
+            .run(([127, 0, 0, 1], 3030))
+            .await;
+    });
+
     let con_status_map = Arc::new(Mutex::new(HashMap::new()));
 
-    rt.block_on(async {
+    // rt.block_on(async {
         loop {
             let res = common::serve(bind_value, dest_value, &direction, con_status_map.clone()).await;
             error!("Serve returned with {:?}", res);
         }
-    });
+    // });
 
     Ok(())
 }
