@@ -579,9 +579,17 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction, co
                     .accept()
                     .await
                     .expect("Could not accept connection?");
+                let peer_addr = match socket.peer_addr() {
+                    Ok(addr)=> addr,
+                    Err(error)=> {
+                        error!("{}", error);
+                        return Err(Box::new(error));
+                    }
+                };
+
                 info!(
                     "Accepting tcp connection from {:?}",
-                    socket.peer_addr().unwrap()
+                    peer_addr
                 );
                 let connection_status = ConnectionStatus {
                     status: ConnectionStatusCode::NEW,
