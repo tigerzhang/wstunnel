@@ -335,8 +335,8 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                                 break;
                             };
 
-                            let con_ = con_status_map1.clone();
-                            let mut status = con_.lock().unwrap();
+                            let con_map = con_status_map1.clone();
+                            let mut status = con_map.lock().unwrap();
                             if status.contains_key(&tcp_remote_port) {
                                 let status = status.get_mut(&tcp_remote_port).unwrap();
                                 status.bytes_got += x.len() as u32;
@@ -394,8 +394,8 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                             }
 
                             {
-                                let con_ = con_status_map2.clone();
-                                let mut status = con_.lock().unwrap();
+                                let con_map = con_status_map2.clone();
+                                let mut status = con_map.lock().unwrap();
                                 if status.contains_key(&tcp_remote_port) {
                                     let status = status.get_mut(&tcp_remote_port).unwrap();
                                     status.bytes_sent += n as u32;
@@ -412,21 +412,24 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
 
                                 info!("Connecting {}. remote port {}", addr_str.clone(), tcp_remote_port);
 
-                                let con_ = con_status_map2.clone();
-                                let mut status = con_.lock().unwrap();
-                                if status.contains_key(&tcp_remote_port) {
-                                    let status = status.get_mut(&tcp_remote_port).unwrap();
-                                    status.address = addr_str.clone();
+                                {
+                                    let con_map = con_status_map2.clone();
+                                    let mut status = con_map.lock().unwrap();
+                                    if status.contains_key(&tcp_remote_port) {
+                                        let status = status.get_mut(&tcp_remote_port).unwrap();
+                                        status.address = addr_str.clone();
+                                    }
                                 }
+
                                 // debug!("{}", addr);
 
-                                // if addr_str.contains("canhazip.com") {
-                                //     // info!("{:?}", con_status_map2.lock().unwrap());
-                                //     let con_ = con_status_map2.lock().unwrap();
-                                //     for key in con_.keys() {
-                                //         info!("{}: {:?}", key, con_.get(key).unwrap());
-                                //     }
-                                // }
+                                if addr_str.contains("canhazip.com") {
+                                    // info!("{:?}", con_status_map2.lock().unwrap());
+                                    let con_map = con_status_map2.lock().unwrap();
+                                    for key in con_map.keys() {
+                                        info!("{}: {:?}", key, con_map.get(key).unwrap());
+                                    }
+                                }
                             }
                             let addr = Arc::clone(&address2);
                             // debug!("send {} bytes to {}", n, addr.lock().unwrap());
@@ -519,8 +522,8 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
         }
         debug!("Properly closed connections.");
 
-        let con_ = con_status_map.clone();
-        let mut con = con_.lock().unwrap();
+        let con_map = con_status_map.clone();
+        let mut con = con_map.lock().unwrap();
         con.remove(&tcp_remote_port);
     });
 
