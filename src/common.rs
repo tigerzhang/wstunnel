@@ -300,6 +300,13 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
         }
     }
 
+    let _ = match tcp.peer_addr() {
+        Ok(addr) => addr,
+        Err(e) => {
+            return Err(Box::new(e));
+        },
+    };
+
     let tcp_remote_port = tcp.peer_addr().unwrap().port();
 
     // We got the tcp connection setup, split both streams in their read and write parts
@@ -617,3 +624,4 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction, co
         }
     }
 }
+

@@ -70,7 +70,7 @@ async fn main() -> Result<(), Error>{
 
     let matches = app.clone().get_matches();
 
-    let verbosity = matches.occurrences_of("v");
+    let verbosity = matches.clone().occurrences_of("v");
     let level = match verbosity {
         0 => LevelFilter::Error,
         1 => LevelFilter::Warn,
@@ -87,19 +87,19 @@ async fn main() -> Result<(), Error>{
         .write_style(WriteStyle::Always)
         .init();
 
-    let bind_value = matches
+    let bind_value = matches.clone()
         .value_of("bind")
         .ok_or(clap::Error::with_description(
             "Couldn't find bind value.",
             clap::ErrorKind::EmptyValue,
-        )).unwrap();
+        )).unwrap().to_string();
 
-    let dest_value = matches
+    let dest_value = matches.clone()
         .value_of("dest")
         .ok_or(clap::Error::with_description(
             "Couldn't find dest value.",
             clap::ErrorKind::EmptyValue,
-        )).unwrap();
+        )).unwrap().to_string();
 
     // let rt = tokio::runtime::Runtime::new().unwrap();
 
@@ -119,7 +119,7 @@ async fn main() -> Result<(), Error>{
     let con_status_map = Arc::new(Mutex::new(HashMap::new()));
     let con_status_map2 = con_status_map.clone();
 
-    tokio::spawn(async move {
+    let http = tokio::spawn(async move {
         let hello = warp::path!("hello" / String)
             .map(|name| format!("Hello, {}!", name));
 
@@ -140,8 +140,12 @@ async fn main() -> Result<(), Error>{
             .await;
     });
 
-    let res = common::serve(bind_value, dest_value, &direction, con_status_map.clone()).await;
-    error!("Serve returned with {:?}", res);
+    let tunnel = tokio::spawn(async move {
+        let res = common::serve(&bind_value, &dest_value, &direction, con_status_map.clone()).await;
+        error!("Serve returned with {:?}", res);
+    });
+
+    tokio::join!(http, tunnel);
 
     Ok(())
 }
