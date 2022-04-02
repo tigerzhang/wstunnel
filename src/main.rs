@@ -13,6 +13,7 @@ mod common;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use warp::Filter;
+use console_subscriber;
 
 #[derive(Debug)]
 pub enum ConnectionStatusCode {
@@ -37,6 +38,12 @@ pub struct ConnectionStatus {
 
 #[tokio::main]
 async fn main() -> Result<(), Error>{
+    // #[cfg(feature = "console")]
+    // {
+        console_subscriber::init();
+
+        // tracing::info!("console_subscriber enabled");
+    // }
     let app = App::new("Websocket Bridge")
         .about("Allows bridging a TCP connection over a websocket.")
         .arg(
@@ -66,11 +73,20 @@ async fn main() -> Result<(), Error>{
                 .help(
                     "ip:port to send to (for websockets; ip:port, [ws[s]://]example.com/sub/path)",
                 ),
-        );
+        )
+        .arg(
+            Arg::with_name("stat")
+                .takes_value(true)
+                .required(true)
+                .help(
+                    "port to bind for stat"
+                )
+        )
+        ;
 
     let matches = app.clone().get_matches();
 
-    let verbosity = matches.clone().occurrences_of("v");
+    let verbosity = matches.occurrences_of("v");
     let level = match verbosity {
         0 => LevelFilter::Error,
         1 => LevelFilter::Warn,
@@ -87,14 +103,14 @@ async fn main() -> Result<(), Error>{
         .write_style(WriteStyle::Always)
         .init();
 
-    let bind_value = matches.clone()
+    let bind_value = matches
         .value_of("bind")
         .ok_or(clap::Error::with_description(
             "Couldn't find bind value.",
             clap::ErrorKind::EmptyValue,
         )).unwrap().to_string();
 
-    let dest_value = matches.clone()
+    let dest_value = matches
         .value_of("dest")
         .ok_or(clap::Error::with_description(
             "Couldn't find dest value.",
@@ -116,6 +132,13 @@ async fn main() -> Result<(), Error>{
         }
     };
 
+    let stat_value = matches
+        .value_of("stat")
+        .ok_or(clap::Error::with_description(
+            "Couldn't find stat value.",
+            clap::ErrorKind::EmptyValue,
+        )).unwrap().to_string();
+
     let con_status_map = Arc::new(Mutex::new(HashMap::new()));
     let con_status_map2 = con_status_map.clone();
 
@@ -135,17 +158,19 @@ async fn main() -> Result<(), Error>{
 
         let routes = warp::get().and(hello.or(stat));
 
+        let stat_port: u16 = stat_value.trim().parse().expect("stat port error");
         warp::serve(routes)
-            .run(([127, 0, 0, 1], 3030))
+            .run(([127, 0, 0, 1], stat_port))
             .await;
     });
 
     let tunnel = tokio::spawn(async move {
         let res = common::serve(&bind_value, &dest_value, &direction, con_status_map.clone()).await;
-        error!("Serve returned with {:?}", res);
+        panic!("Serve returned with {:?}", res);
     });
 
-    tokio::join!(http, tunnel);
+    // 如果 tunnel 退出，整个 app 应该退出
+    tokio::join!(tunnel);
 
     Ok(())
 }
