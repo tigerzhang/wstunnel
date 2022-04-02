@@ -621,7 +621,7 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction, co
                     e, dest_location
                 );
             }
-        }
+        };
     }
 }
 

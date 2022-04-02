@@ -1,3 +1,5 @@
+cargo-features = ["strip"]
+
 [package]
 name = "ws_bridge_rs"
 version = "0.1.0"
@@ -5,15 +7,21 @@ authors = ["Ivor Wanders <ivor@iwanders.net>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
-
 [dependencies]
 clap = "2.33.3"
 tokio-tungstenite = { version = "0.16.0", features = ["native-tls"] }
-tokio = { version = "1.14.0", features = ["rt", "net", "rt-multi-thread", "io-util", "sync", "macros"] }
+tokio = { version = "1.15", features = ["rt", "net", "rt-multi-thread", "io-util", "sync", "macros", "full", "tracing"] }
 warp = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 log = "0.4"
 env_logger = "0.9.0"
+console-subscriber = "0.1.3"
 
 [profile.release]
-opt-level = 3
+strip = true  # Automatically strip symbols from the binary.
+#opt-level = "z"  # Optimize for size.
+opt-level = 3  # Optimize for speed.
+lto = true
+codegen-units = 1
+panic = "abort"
+
