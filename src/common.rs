@@ -255,9 +255,11 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
     match tcp_in {
         TcpOrDestination::Tcp(src_stream) => {
             // Convert the source stream into a websocket connection.
+            info!("websocket accepting");
             ws = accept_async(tokio_tungstenite::MaybeTlsStream::Plain(src_stream)).await?;
         }
         TcpOrDestination::Dest(dest_location) => {
+            info!("connecting {}", dest_location);
             let (wsz, _) = match connect_async(dest_location).await {
                 Ok(v) => v,
                 Err(e) => {
@@ -340,10 +342,10 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                     };
                     match data {
                         Message::Binary(ref x) => {
-                            let _addr = Arc::clone(&address1);
-                            // debug!("Got {} bytes from {}", x.len(), addr.lock().unwrap());
+                            let addr = Arc::clone(&address1);
+                            debug!("ws got {} bytes from {}", x.len(), addr.lock().unwrap());
                             if x.len() < 11 {
-                                debug!("Got {:?}", x);
+                                debug!("ws got {:?}", x);
                             }
                             if dest_write.write(x).await.is_err() {
                                 break;
@@ -405,7 +407,10 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                         }
                         Ok(n) => {
                             if n < 11 {
-                                debug!("Send {:?}", &buf[0..n]);
+                                debug!("tcp read {:?}", &buf[0..n]);
+                            } else {
+                                let addr = Arc::clone(&address2);
+                                debug!("tcp read {} bytes {} ", n, addr.lock().unwrap());
                             }
 
                             {
@@ -438,16 +443,16 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
 
                                 // debug!("{}", addr);
 
-                                if addr_str.contains("canhazip.com") {
-                                    // info!("{:?}", con_status_map2.lock().unwrap());
-                                    let con_map = con_status_map2.lock().unwrap();
-                                    for key in con_map.keys() {
-                                        info!("{}: {:?}", key, con_map.get(key).unwrap());
-                                    }
-                                }
+                                // if addr_str.contains("canhazip.com") {
+                                //     // info!("{:?}", con_status_map2.lock().unwrap());
+                                //     let con_map = con_status_map2.lock().unwrap();
+                                //     for key in con_map.keys() {
+                                //         info!("{}: {:?}", key, con_map.get(key).unwrap());
+                                //     }
+                                // }
                             }
                             let _addr = Arc::clone(&address2);
-                            // debug!("send {} bytes to {}", n, addr.lock().unwrap());
+                            // debug!("ws send {} bytes", n);
                             let res = buf[..n].to_vec();
                             match write.send(Message::Binary(res)).await {
                                 Ok(_) => {
@@ -554,7 +559,7 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction, co
     let listener = TcpListener::bind(bind_location)
         .await
         .expect("Could not bind to port");
-    info!("Succesfully bound to {:?}", bind_location);
+    info!("Successfully bound to {:?}", bind_location);
 
     loop {
         let in1 = match dir {
