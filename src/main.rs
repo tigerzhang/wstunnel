@@ -38,12 +38,12 @@ pub struct ConnectionStatus {
 
 #[tokio::main]
 async fn main() -> Result<(), Error>{
-    // #[cfg(feature = "console")]
-    // {
+    #[cfg(feature = "console")]
+    {
         console_subscriber::init();
 
-        // tracing::info!("console_subscriber enabled");
-    // }
+        tracing::info!("console_subscriber enabled");
+    }
     let app = App::new("Websocket Bridge")
         .about("Allows bridging a TCP connection over a websocket.")
         .arg(

@@ -873,12 +873,37 @@ dependencies = [
 
 [[package]]
 name = "parking_lot"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d17b78036a60663b797adeaee46f5c9dfebb86948d1255007a1d6be0271ff99"
+dependencies = [
+ "instant",
+ "lock_api",
+ "parking_lot_core 0.8.5",
+]
+
+[[package]]
+name = "parking_lot"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "87f5ec2493a61ac0506c0f4199f99070cbe83857b0337006a30f3e6719b8ef58"
 dependencies = [
  "lock_api",
- "parking_lot_core",
+ "parking_lot_core 0.9.1",
+]
+
+[[package]]
+name = "parking_lot_core"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d76e8e1493bcac0d2766c42737f34458f1c8c50c0d23bcb24ea953affb273216"
+dependencies = [
+ "cfg-if",
+ "instant",
+ "libc",
+ "redox_syscall",
+ "smallvec",
+ "winapi",
 ]
 
 [[package]]
@@ -1032,6 +1057,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "r2d2"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "545c5bc2b880973c9c10e4067418407a0ccaa3091781d1671d46eb35107cb26f"
+dependencies = [
+ "log",
+ "parking_lot 0.11.2",
+ "scheduled-thread-pool",
+]
+
+[[package]]
 name = "rand"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1126,6 +1162,15 @@ checksum = "8f05ba609c234e60bee0d547fe94a4c7e9da733d1c962cf6e59efa4cd9c8bc75"
 dependencies = [
  "lazy_static",
  "winapi",
+]
+
+[[package]]
+name = "scheduled-thread-pool"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc6f74fd1204073fa02d5d5d68bec8021be4c38690b61264b2fdb48083d0e7d7"
+dependencies = [
+ "parking_lot 0.11.2",
 ]
 
 [[package]]
@@ -1375,7 +1420,7 @@ dependencies = [
  "mio",
  "num_cpus",
  "once_cell",
- "parking_lot",
+ "parking_lot 0.12.0",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
@@ -1441,16 +1486,14 @@ dependencies = [
 
 [[package]]
 name = "tokio-tungstenite"
-version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e057364a4dd37870b33bf8dc1885d29187d90770f488d599d3ee8d9e4916fbd3"
+version = "0.17.1"
 dependencies = [
  "futures-util",
  "log",
  "native-tls",
  "tokio",
  "tokio-native-tls",
- "tungstenite 0.16.0",
+ "tungstenite 0.17.2",
 ]
 
 [[package]]
@@ -1638,9 +1681,9 @@ dependencies = [
 
 [[package]]
 name = "tungstenite"
-version = "0.16.0"
+version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ad3713a14ae247f22a728a0456a545df14acf3867f905adff84be99e23b3ad1"
+checksum = "d96a2dea40e7570482f28eb57afbe42d97551905da6a9400acc5c328d24004f5"
 dependencies = [
  "base64",
  "byteorder",
@@ -1650,7 +1693,7 @@ dependencies = [
  "log",
  "native-tls",
  "rand",
- "sha-1 0.9.8",
+ "sha-1 0.10.0",
  "thiserror",
  "url",
  "utf-8",
@@ -1901,7 +1944,8 @@ dependencies = [
  "env_logger",
  "futures-util",
  "log",
+ "r2d2",
  "tokio",
- "tokio-tungstenite 0.16.0",
+ "tokio-tungstenite 0.17.1",
  "warp",
 ]

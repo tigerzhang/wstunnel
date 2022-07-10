@@ -3,7 +3,7 @@ use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
 use tokio_tungstenite::tungstenite;
-use tokio_tungstenite::{accept_async, connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{accept_async, connect_async, connect_async_trust_certificate, tungstenite::protocol::Message};
 type Error = Box<dyn std::error::Error>;
 use crate::tokio::io::AsyncWriteExt;
 use futures_util::SinkExt;
@@ -260,7 +260,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
         }
         TcpOrDestination::Dest(dest_location) => {
             info!("connecting {}", dest_location);
-            let (wsz, _) = match connect_async(dest_location).await {
+            let (wsz, _) = match connect_async_trust_certificate(dest_location).await {
                 Ok(v) => v,
                 Err(e) => {
                     warn!("Something went wrong connecting {:?}", e);
@@ -402,8 +402,9 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                     match res {
                         Ok(0) => {
                             let addr = Arc::clone(&address2);
-                            debug!("Remote tcp socket has closed, sending close message on websocket. {}", addr.lock().unwrap());
+                            warn!("tcp read 0 byte. Remote tcp socket has closed, sending close message on websocket. {}", addr.lock().unwrap());
                             break;
+                            // debug!("tcp read 0 byte");
                         }
                         Ok(n) => {
                             if n < 11 {
@@ -493,7 +494,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
             // This happens if the shutdown happens from the other side.
             // error!("Could not send shutdown signal: {:?}", v);
         }
-        debug!("Reached end of consume from tcp. {}", address.lock().unwrap());
+        warn!("Reached end of consume from tcp. {}", address.lock().unwrap());
         (dest_read, write, need_close)
     });
 
