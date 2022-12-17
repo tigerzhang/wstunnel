@@ -13,7 +13,7 @@ mod common;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use warp::Filter;
-use console_subscriber;
+// use console_subscriber;
 
 #[derive(Debug)]
 pub enum ConnectionStatusCode {

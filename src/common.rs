@@ -3,7 +3,7 @@ use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
 use tokio_tungstenite::tungstenite;
-use tokio_tungstenite::{accept_async, connect_async, connect_async_trust_certificate, tungstenite::protocol::Message};
+use tokio_tungstenite::{accept_async, connect_async_trust_certificate, tungstenite::protocol::Message};
 type Error = Box<dyn std::error::Error>;
 use crate::tokio::io::AsyncWriteExt;
 use futures_util::SinkExt;
