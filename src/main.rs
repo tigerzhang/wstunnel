@@ -4,7 +4,7 @@ use clap::{App, Arg};
 use tokio;
 
 use env_logger::{Builder, WriteStyle};
-use log::{LevelFilter, error};
+use log::{LevelFilter};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -142,7 +142,7 @@ async fn main() -> Result<(), Error>{
     let con_status_map = Arc::new(Mutex::new(HashMap::new()));
     let con_status_map2 = con_status_map.clone();
 
-    let http = tokio::spawn(async move {
+    let _http = tokio::spawn(async move {
         let hello = warp::path!("hello" / String)
             .map(|name| format!("Hello, {}!", name));
 
@@ -170,7 +170,9 @@ async fn main() -> Result<(), Error>{
     });
 
     // 如果 tunnel 退出，整个 app 应该退出
-    tokio::join!(tunnel);
+    let _ = tokio::join!(tunnel);
+
+    // TODO: 建立连接时，延迟大的原因：socks 握手带来的额外延迟。考虑本地处理 socks 握手。
 
     Ok(())
 }
