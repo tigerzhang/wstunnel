@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::mem::take;
+use std::sync::{Arc};
 use futures_util::SinkExt;
 use log::{debug, error, info, trace, warn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -13,8 +14,11 @@ use std::time::SystemTime;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::StreamExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::Mutex;
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::task::JoinHandle;
+
+use crate::proxy_socks5;
 
 pub async fn serve_ws_to_tcp(
     bind_location: &str,
@@ -71,15 +75,21 @@ pub async fn serve_ws_to_tcp(
         let address1 = address.clone();
         let con_status_map1 = con_status_map_clone.clone();
         let dir_clone_1 = dir_clone.clone();
+        let tcp_write_arc = Arc::new(Mutex::new(tcp_write));
+        let tcp_write_clone = tcp_write_arc.clone();
+        let ws_read_arc = Arc::new(Mutex::new(ws_read));
+        let ws_read_clone = ws_read_arc.clone();
         let task_ws_to_tcp = tokio::spawn(async move {
-            ws_to_tcp_task(&dir_clone_1, tcp_remote_port, tcp_write, ws_read, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1).await
+            ws_to_tcp_task(&dir_clone_1, tcp_remote_port, tcp_write_clone, ws_read_clone, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1).await
         });
         let address2 = address.clone();
         let con_status_map2 = con_status_map_clone.clone();
         // Consume from the tcp socket and write on the websocket.
         let dir_clone_2 = dir_clone.clone();
+        let tcp_write_clone_2 = tcp_write_arc.clone();
+        let ws_read_clone_2 = ws_read_arc.clone();
         let task_tcp_to_ws = tokio::spawn(async move {
-            tcp_to_ws_task(&dir_clone_2, tcp_remote_port, tcp_read, ws_write, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
+            tcp_to_ws_task(&dir_clone_2, tcp_remote_port, tcp_read, tcp_write_clone_2, ws_read_clone_2, ws_write, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
         });
 
         let dir_clone_3 = dir_clone.clone();
@@ -91,7 +101,13 @@ pub async fn serve_ws_to_tcp(
     Ok(())
 }
 
-async fn clean_up_task(dir: &Direction, con_status_map_clone: Arc<Mutex<HashMap<u16, ConnectionStatus>>>, tcp_remote_port: &u16, task_ws_to_tcp: JoinHandle<(OwnedWriteHalf, SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>)>, task_tcp_to_ws: JoinHandle<(OwnedReadHalf, SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, bool)>) {
+async fn clean_up_task(
+    dir: &Direction,
+    con_status_map_clone: Arc<Mutex<HashMap<u16, ConnectionStatus>>>,
+    tcp_remote_port: &u16,
+    task_ws_to_tcp: JoinHandle<(Arc<Mutex<OwnedWriteHalf>>, Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>)>,
+    task_tcp_to_ws: JoinHandle<(OwnedReadHalf, SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, bool)>
+) {
 // Wait for both tasks to complete.
     let (r_ws_to_tcp, r_tcp_to_ws) = tokio::join!(task_ws_to_tcp, task_tcp_to_ws);
     if let Err(ref v) = r_ws_to_tcp {
@@ -164,14 +180,14 @@ async fn tcp_to_ws_debug(buf: &Vec<u8>, n: usize, address2: Arc<Mutex<String>>) 
         debug!("tcp read {:?}", &buf[0..n]);
     } else {
         let addr = Arc::clone(&address2);
-        debug!("tcp read {} bytes {} ", n, addr.lock().unwrap());
+        debug!("tcp read {} bytes {} ", n, addr.lock().await);
     }
 }
 
 async fn tcp_to_ws_status(con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStatus>>>, address2: Arc<Mutex<String>>, tcp_remote_port: u16, buf: &Vec<u8>, n: usize) {
     {
         let con_map = con_status_map2.clone();
-        let mut status = con_map.lock().unwrap();
+        let mut status = con_map.lock().await;
         if status.contains_key(&tcp_remote_port) {
             let status = status.get_mut(&tcp_remote_port).unwrap();
             status.bytes_sent += n as u32;
@@ -182,7 +198,7 @@ async fn tcp_to_ws_status(con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStat
         // buf[2] reserved
         let addr = Arc::clone(&address2);
         let addr_str = Address::read_from_buf(&buf, 3).await.unwrap().to_string();
-        let mut value = addr.lock().unwrap();
+        let mut value = addr.lock().await;
         // *value = "abc".to_string();
         *value = addr_str.clone();
 
@@ -190,7 +206,7 @@ async fn tcp_to_ws_status(con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStat
 
         {
             let con_map = con_status_map2.clone();
-            let mut status = con_map.lock().unwrap();
+            let mut status = con_map.lock().await;
             if status.contains_key(&tcp_remote_port) {
                 let status = status.get_mut(&tcp_remote_port).unwrap();
                 status.address = addr_str.clone();
@@ -209,7 +225,19 @@ async fn tcp_to_ws_status(con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStat
     }
 }
 
-async fn tcp_to_ws_task(dir: &Direction, tcp_remote_port: u16, mut tcp_read: OwnedReadHalf, mut ws_write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, mut shutdown_from_ws_rx: Receiver<bool>, shutdown_from_tcp_tx: Sender<bool>, address: Arc<Mutex<String>>, address2: Arc<Mutex<String>>, con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStatus>>>) -> (OwnedReadHalf, SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, bool) {
+async fn tcp_to_ws_task(
+    dir: &Direction,
+    tcp_remote_port: u16,
+    mut tcp_read: OwnedReadHalf,
+    mut tcp_write: Arc<Mutex<OwnedWriteHalf>>,
+    mut ws_read: Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
+    mut ws_write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    mut shutdown_from_ws_rx: Receiver<bool>,
+    shutdown_from_tcp_tx: Sender<bool>,
+    address: Arc<Mutex<String>>,
+    address2: Arc<Mutex<String>>,
+    con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStatus>>>
+) -> (OwnedReadHalf, SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, bool) {
     let mut need_close = true;
     let mut buf = vec![0; 1024 * 1024];
     loop {
@@ -220,11 +248,21 @@ async fn tcp_to_ws_task(dir: &Direction, tcp_remote_port: u16, mut tcp_read: Own
                 match res {
                     Ok(0) => {
                         let addr = Arc::clone(&address2);
-                        warn!("tcp read 0 byte. Remote tcp socket has closed, sending close message on websocket. {}", addr.lock().unwrap());
+                        warn!("tcp read 0 byte. Remote tcp socket has closed, sending close message on websocket. {}", addr.lock().await);
                         break;
                         // debug!("tcp read 0 byte");
                     }
                     Ok(n) => {
+                        match dir {
+                            Direction::ClientSide => {
+                                // handle client socks5 requests like a socks5 proxy
+                                proxy_socks5::handle_client_socks5_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
+                            }
+                            Direction::ServerSide => {
+                                // handle server socks5 requests like a socks5 client
+                                proxy_socks5::handle_server_socks5_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
+                            }
+                        }
                         tcp_to_ws_debug(&buf, n, address2.clone()).await;
 
                         tcp_to_ws_status(con_status_map2.clone(), address2.clone(), tcp_remote_port, &buf, n).await;
@@ -271,13 +309,13 @@ async fn tcp_to_ws_task(dir: &Direction, tcp_remote_port: u16, mut tcp_read: Own
         // This happens if the shutdown happens from the other side.
         // error!("Could not send shutdown signal: {:?}", v);
     }
-    warn!("Reached end of consume from tcp. {}", address.lock().unwrap());
+    warn!("Reached end of consume from tcp. {}", address.lock().await);
     (tcp_read, ws_write, need_close)
 }
 
 async fn ws_to_tcp_status(con_status_map1: Arc<Mutex<HashMap<u16, ConnectionStatus>>>, tcp_remote_port: u16, x: &[u8]) {
     let con_map = con_status_map1.clone();
-    let mut status = con_map.lock().unwrap();
+    let mut status = con_map.lock().await;
     if status.contains_key(&tcp_remote_port) {
         let status = status.get_mut(&tcp_remote_port).unwrap();
         status.bytes_got += x.len() as u32;
@@ -295,10 +333,13 @@ async fn ws_to_tcp_debug(x: &[u8]) {
     }
 }
 
-async fn ws_to_tcp_task(dir: &Direction, tcp_remote_port: u16, mut tcp_write: OwnedWriteHalf, mut ws_read: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>, shutdown_from_ws_tx: Sender<bool>, mut shutdown_from_tcp_rx: Receiver<bool>, address1: Arc<Mutex<String>>, con_status_map1: Arc<Mutex<HashMap<u16, ConnectionStatus>>>) -> (OwnedWriteHalf, SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>) {
+async fn ws_to_tcp_task(dir: &Direction, tcp_remote_port: u16, mut tcp_write: Arc<Mutex<OwnedWriteHalf>>, mut ws_read: Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>, shutdown_from_ws_tx: Sender<bool>, mut shutdown_from_tcp_rx: Receiver<bool>, address1: Arc<Mutex<String>>, con_status_map1: Arc<Mutex<HashMap<u16, ConnectionStatus>>>) -> (Arc<Mutex<OwnedWriteHalf>>, Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>) {
     loop {
+        let ws_read_clone = ws_read.clone();
+        let ws_read_lock = ws_read_clone.lock().await;
+        let mut ws_read_lock_unwrap = ws_read_lock;
         tokio::select! {
-            message = ws_read.next() => {
+            message = ws_read_lock_unwrap.next() => {
                 if message.is_none() {
                     debug!("Got none, end of websocket stream.");
                     break;
@@ -308,7 +349,7 @@ async fn ws_to_tcp_task(dir: &Direction, tcp_remote_port: u16, mut tcp_write: Ow
                     Ok(v) => v,
                     Err(p) => {
                         let addr = Arc::clone(&address1);
-                        debug!("Err reading data {:?} {}", p, addr.lock().unwrap());
+                        debug!("Err reading data {:?} {}", p, addr.lock().await);
                         // dest_write.shutdown().await?;
                         break;
                     }
@@ -316,11 +357,11 @@ async fn ws_to_tcp_task(dir: &Direction, tcp_remote_port: u16, mut tcp_write: Ow
                 match data {
                     Message::Binary(ref x) => {
                         let addr = Arc::clone(&address1);
-                        debug!("ws got {} bytes from {}", x.len(), addr.lock().unwrap());
+                        debug!("ws got {} bytes from {}", x.len(), addr.lock().await);
 
                         ws_to_tcp_debug(x).await;
 
-                        if tcp_write.write(x).await.is_err() {
+                        if tcp_write.lock().await.write(x).await.is_err() {
                             break;
                         };
 
@@ -344,7 +385,7 @@ async fn ws_to_tcp_task(dir: &Direction, tcp_remote_port: u16, mut tcp_write: Ow
             }
         }
     }
-    debug!("Reached end of consume from websocket. {}", address1.lock().unwrap());
+    debug!("Reached end of consume from websocket. {}", address1.lock().await);
     if let Err(_) = shutdown_from_ws_tx.send(true) {
         // This happens if the shutdown happens from the other side.
         // error!("Could not send shutdown signal: {:?}", v);
@@ -395,7 +436,7 @@ pub async fn serve_tcp_to_ws(
         };
         let con_status_map_clone = con_status_map.clone();
         // let mut status = con_status_map_clone_2.lock().unwrap();
-        con_status_map_clone.lock().unwrap().insert(tcp.peer_addr().unwrap().port(), connection_status);
+        con_status_map_clone.lock().await.insert(tcp.peer_addr().unwrap().port(), connection_status);
 
         info!("connecting {}", dest_location);
         let (ws, _) = match tokio_tungstenite::connect_async_trust_certificate(dest_location).await {
@@ -420,15 +461,21 @@ pub async fn serve_tcp_to_ws(
         let address1 = address.clone();
         let con_status_map1 = con_status_map_clone.clone();
         let dir_clone_1 = dir_clone.clone();
+        let tcp_write_arc = Arc::new(Mutex::new(tcp_write));
+        let tcp_write_arc_clone = tcp_write_arc.clone();
+        let ws_read_arc = Arc::new(Mutex::new(ws_read));
+        let ws_read_arc_clone = ws_read_arc.clone();
         let task_ws_to_tcp = tokio::spawn(async move {
-            ws_to_tcp_task(&dir_clone_1, tcp_remote_port, tcp_write, ws_read, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1).await
+            ws_to_tcp_task(&dir_clone_1, tcp_remote_port, tcp_write_arc_clone, ws_read_arc_clone, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1).await
         });
         let address2 = address.clone();
         let con_status_map2 = con_status_map_clone.clone();
         // Consume from the tcp socket and write on the websocket.
         let dir_clone_2 = dir_clone.clone();
+        let tcp_write_arc_clone_2 = tcp_write_arc.clone();
+        let ws_read_arc_clone = ws_read_arc.clone();
         let task_tcp_to_ws = tokio::spawn(async move {
-            tcp_to_ws_task(&dir_clone_2, tcp_remote_port, tcp_read, ws_write, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
+            tcp_to_ws_task(&dir_clone_2, tcp_remote_port, tcp_read, tcp_write_arc_clone_2, ws_read_arc_clone, ws_write, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
         });
 
         let dir_clone_3 = dir_clone.clone();
@@ -447,10 +494,10 @@ pub async fn serve_separate(
     con_status_map: ConStatus
 ) -> Result<(), Box<dyn std::error::Error>> {
     match dir {
-        Direction::WsToTcp => {
+        Direction::ServerSide => {
             serve_ws_to_tcp(bind_location, dest_location, dir, con_status_map.clone()).await
         }
-        Direction::TcpToWs => {
+        Direction::ClientSide => {
             serve_tcp_to_ws(bind_location, dest_location, dir, con_status_map.clone()).await
         }
     }

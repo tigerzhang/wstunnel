@@ -10,9 +10,11 @@ type Error = Box<dyn std::error::Error>;
 
 mod common;
 mod serve;
+mod proxy_socks5;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 use std::time::SystemTime;
+use tokio::sync::Mutex;
 use warp::Filter;
 use crate::common::Direction;
 // use console_subscriber;
@@ -127,8 +129,8 @@ async fn main() -> Result<(), Error>{
             "Couldn't find mode value.",
             clap::ErrorKind::EmptyValue,
         ))? {
-        "ws_to_tcp" => common::Direction::WsToTcp,
-        "tcp_to_ws" => common::Direction::TcpToWs,
+        "ws_to_tcp" => common::Direction::ServerSide,
+        "tcp_to_ws" => common::Direction::ClientSide,
         &_ => {
             panic!("Got unknown direction, shouldn't be possible.");
         }
@@ -148,17 +150,19 @@ async fn main() -> Result<(), Error>{
         let hello = warp::path!("hello" / String)
             .map(|name| format!("Hello, {}!", name));
 
-        let stat = warp::path("stat")
-            .map(move || {
-                let con_map = con_status_map2.lock().unwrap();
-                let mut ret: String = String::new();
-                for key in con_map.keys() {
-                    ret += &*format!("{}: {:?}\n", key, con_map.get(key).unwrap());
-                }
-                ret
-            });
+        // let con_map = con_status_map2.lock().await;
 
-        let routes = warp::get().and(hello.or(stat));
+        // let stat = warp::path("stat")
+        //     .map(move || {
+                // let mut ret: String = String::new();
+                // for key in con_map.keys() {
+                //     ret += &*format!("{}: {:?}\n", key, con_map.get(key).unwrap());
+                // }
+                // ret
+            // });
+
+        // let routes = warp::get().and(hello.or(stat));
+        let routes = warp::get().and(hello);
 
         let stat_port: u16 = stat_value.trim().parse().expect("stat port error");
         warp::serve(routes)
@@ -168,10 +172,10 @@ async fn main() -> Result<(), Error>{
 
     let tunnel = tokio::spawn(async move {
         match direction {
-            Direction::WsToTcp => {
+            Direction::ServerSide => {
                 let _ = serve::serve_ws_to_tcp(&bind_value, &dest_value, &direction, con_status_map).await;
             }
-            Direction::TcpToWs => {
+            Direction::ClientSide => {
                 // let res = common::serve(&bind_value, &dest_value, &direction, con_status_map.clone()).await;
                 // panic!("Serve returned with {:?}", res);
                 let _ = serve::serve_tcp_to_ws(&bind_value, &dest_value, &direction, con_status_map).await;
