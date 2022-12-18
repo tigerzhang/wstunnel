@@ -32,6 +32,7 @@ pub async fn serve_ws_to_tcp(
     info!("Successfully bound to {:?}", bind_location);
 
     loop {
+        let (wait_for_socks_init_sender, mut wait_for_socks_init_receiver) = tokio::sync::mpsc::channel(5);
         let dir_clone = (*dir).clone();
         let con_status_map_clone = con_status_map.clone();
         let (socket, _) = listener
@@ -75,21 +76,33 @@ pub async fn serve_ws_to_tcp(
         let address1 = address.clone();
         let con_status_map1 = con_status_map_clone.clone();
         let dir_clone_1 = dir_clone.clone();
+
         let tcp_write_arc = Arc::new(Mutex::new(tcp_write));
         let tcp_write_clone = tcp_write_arc.clone();
+        let tcp_read_arc = Arc::new(Mutex::new(tcp_read));
+        let tcp_read_arc_clone = tcp_read_arc.clone();
         let ws_read_arc = Arc::new(Mutex::new(ws_read));
         let ws_read_clone = ws_read_arc.clone();
+        let ws_write_arc = Arc::new(Mutex::new(ws_write));
+        let ws_write_arc_clone = ws_write_arc.clone();
+
         let task_ws_to_tcp = tokio::spawn(async move {
-            ws_to_tcp_task(&dir_clone_1, tcp_remote_port, tcp_write_clone, ws_read_clone, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1).await
+            ws_to_tcp_task(&dir_clone_1, tcp_remote_port, tcp_read_arc_clone, tcp_write_clone, ws_read_clone, ws_write_arc_clone, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1, Some(wait_for_socks_init_sender)).await
         });
         let address2 = address.clone();
         let con_status_map2 = con_status_map_clone.clone();
         // Consume from the tcp socket and write on the websocket.
         let dir_clone_2 = dir_clone.clone();
+
         let tcp_write_clone_2 = tcp_write_arc.clone();
+        let tcp_read_arc_clone = tcp_read_arc.clone();
         let ws_read_clone_2 = ws_read_arc.clone();
+        let ws_write_arc_clone = ws_write_arc.clone();
+
         let task_tcp_to_ws = tokio::spawn(async move {
-            tcp_to_ws_task(&dir_clone_2, tcp_remote_port, tcp_read, tcp_write_clone_2, ws_read_clone_2, ws_write, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
+            // let _ = wait_for_socks_init_receiver.recv().await;
+            // debug!("wait_for_socks_init_receiver recv");
+            tcp_to_ws_task(&dir_clone_2, tcp_remote_port, tcp_read_arc_clone, tcp_write_clone_2, ws_read_clone_2, ws_write_arc_clone, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
         });
 
         let dir_clone_3 = dir_clone.clone();
@@ -106,7 +119,7 @@ async fn clean_up_task(
     con_status_map_clone: Arc<Mutex<HashMap<u16, ConnectionStatus>>>,
     tcp_remote_port: &u16,
     task_ws_to_tcp: JoinHandle<(Arc<Mutex<OwnedWriteHalf>>, Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>)>,
-    task_tcp_to_ws: JoinHandle<(OwnedReadHalf, SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, bool)>
+    task_tcp_to_ws: JoinHandle<(Arc<Mutex<OwnedReadHalf>>, Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>, bool)>
 ) {
 // Wait for both tasks to complete.
     let (r_ws_to_tcp, r_tcp_to_ws) = tokio::join!(task_ws_to_tcp, task_tcp_to_ws);
@@ -130,18 +143,26 @@ async fn clean_up_task(
 
     // Reunite the streams, this is guaranteed to succeed as we always use the correct parts.
     match Arc::try_unwrap(dest_write) {
-        Ok(u) => {
+        Ok(dest_write_takeout) => {
             // let u = Arc::try_unwrap(dest_write_clone).unwrap();
             // let dest_write_clone_2 = dest_write_clone.lock().await.into_inner();
-            let o = u.into_inner();
-            let mut tcp_stream = dest_read.reunite(o).unwrap();
-            if let Err(ref v) = tcp_stream.shutdown().await {
-                error!(
-                "Error properly closing the tcp from {:?}: {:?}",
-                tcp_stream.peer_addr(),
-                v
-            );
-                return;
+            let dest_write_inner = dest_write_takeout.into_inner();
+            match Arc::try_unwrap(dest_read) {
+                Ok(dest_read_takeout) => {
+                    let dest_read_inner = dest_read_takeout.into_inner();
+                    let mut tcp_stream = dest_read_inner.reunite(dest_write_inner).unwrap();
+                    if let Err(ref v) = tcp_stream.shutdown().await {
+                        error!(
+                            "Error properly closing the tcp from {:?}: {:?}",
+                            tcp_stream.peer_addr(),
+                            v
+                        );
+                        return;
+                    }
+                }
+                Err(e) => {
+                    error!("Error taking out dest_read: {:?}", e);
+                }
             }
         }
         Err(e) => {
@@ -150,17 +171,33 @@ async fn clean_up_task(
     }
 
     if ws_need_close {
-        let u = Arc::try_unwrap(read);
-        match u {
-            Ok(u) => {
-                let o = u.into_inner();
-                let mut ws_stream = o.reunite(write).unwrap();
-                if let Err(ref v) = ws_stream.get_mut().shutdown().await {
-                    error!(
-                    "Error properly closing the ws from {:?}: {:?}",
-                    "something", v
-                );
-                    return;
+        match Arc::try_unwrap(read) {
+            Ok(read_takeout) => {
+                let read_inner = read_takeout.into_inner();
+                match Arc::try_unwrap(write) {
+                    Ok(write_takeout) => {
+                        let write_inner = write_takeout.into_inner();
+                        let mut ws_stream = read_inner.reunite(write_inner).unwrap();
+                        let r = ws_stream.get_ref();
+                        if let Err(ref v) = ws_stream.close(None).await {
+                            let r = ws_stream.get_ref();
+                            match r {
+                                MaybeTlsStream::Plain(t) => {
+                                    error!(
+                                        "Error properly closing the websocket from {:?}: {:?}",
+                                        t.peer_addr(),
+                                        v
+                                    );
+                                }
+                                MaybeTlsStream::NativeTls(_) => {}
+                                _ => {}
+                            }
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error taking out write: {:?}", e);
+                    }
                 }
             }
             Err(e) => {
@@ -228,21 +265,25 @@ async fn tcp_to_ws_status(con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStat
 async fn tcp_to_ws_task(
     dir: &Direction,
     tcp_remote_port: u16,
-    mut tcp_read: OwnedReadHalf,
+    mut tcp_read: Arc<Mutex<OwnedReadHalf>>,
     mut tcp_write: Arc<Mutex<OwnedWriteHalf>>,
     mut ws_read: Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
-    mut ws_write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+    mut ws_write: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
     mut shutdown_from_ws_rx: Receiver<bool>,
     shutdown_from_tcp_tx: Sender<bool>,
     address: Arc<Mutex<String>>,
     address2: Arc<Mutex<String>>,
     con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStatus>>>
-) -> (OwnedReadHalf, SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, bool) {
+) -> (Arc<tokio::sync::Mutex<OwnedReadHalf>>, Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>, bool) {
     let mut need_close = true;
     let mut buf = vec![0; 1024 * 1024];
+    let mut need_init_state = true;
     loop {
+        debug!("start tcp_to_ws_task loop");
+        let tcp_read_clone = tcp_read.clone();
+        let mut tcp_read_lock = tcp_read_clone.lock().await;
         tokio::select! {
-            res = tcp_read.read(&mut buf) => {
+            res = tcp_read_lock.read(&mut buf) => {
                 // Return value of `Ok(0)` signifies that the remote has closed, if this happens
                 // we want to initiate shutting down the websocket.
                 match res {
@@ -253,30 +294,51 @@ async fn tcp_to_ws_task(
                         // debug!("tcp read 0 byte");
                     }
                     Ok(n) => {
+                        debug!("tcp read {} bytes", n);
+                        let mut ignore_to_next_packet = false;
                         match dir {
                             Direction::ClientSide => {
-                                // handle client socks5 requests like a socks5 proxy
-                                proxy_socks5::handle_client_socks5_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
+                                if need_init_state {
+                                    need_init_state = false;
+                                    // handle client socks5 requests like a socks5 proxy
+                                    let r = proxy_socks5::handle_client_socks5_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
+                                    if r.is_ok() {
+                                        ignore_to_next_packet = true;
+                                    }
+                                }
                             }
                             Direction::ServerSide => {
-                                // handle server socks5 requests like a socks5 client
-                                proxy_socks5::handle_server_socks5_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
+                                // sink the socks5 server greeting message [5, 0]
+                                // proxy_socks5::handle_server_socks5_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
+                                if need_init_state {
+                                    need_init_state = false;
+                                    match proxy_socks5::handle_server_side_socks5_response(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await {
+                                        Ok(_) => {
+                                            ignore_to_next_packet = true;
+                                        }
+                                        Err(e) => {
+                                            error!("Error handling server side socks5 response: {:?}", e);
+                                        }
+                                    }
+                                }
                             }
                         }
-                        tcp_to_ws_debug(&buf, n, address2.clone()).await;
+                        if ignore_to_next_packet == false && need_init_state == false {
+                            tcp_to_ws_debug(&buf, n, address2.clone()).await;
 
-                        tcp_to_ws_status(con_status_map2.clone(), address2.clone(), tcp_remote_port, &buf, n).await;
+                            tcp_to_ws_status(con_status_map2.clone(), address2.clone(), tcp_remote_port, &buf, n).await;
 
-                        let _addr = Arc::clone(&address2);
-                        // debug!("ws send {} bytes", n);
-                        let res = buf[..n].to_vec();
-                        match ws_write.send(Message::Binary(res)).await {
-                            Ok(_) => {
-                                continue;
-                            }
-                            Err(v) => {
-                                debug!("Failed to send binary data on ws: {:?}", v);
-                                break;
+                            let _addr = Arc::clone(&address2);
+                            let res = buf[..n].to_vec();
+                            match ws_write.lock().await.send(Message::Binary(res)).await {
+                                Ok(_) => {
+                                    debug!("ws send {} bytes", n);
+                                    continue;
+                                }
+                                Err(v) => {
+                                    debug!("Failed to send binary data on ws: {:?}", v);
+                                    break;
+                                }
                             }
                         }
                     }
@@ -301,7 +363,7 @@ async fn tcp_to_ws_task(
 
     // Send the websocket close message.
     if need_close {
-        if let Err(v) = ws_write.send(Message::Close(None)).await {
+        if let Err(v) = ws_write.lock().await.send(Message::Close(None)).await {
             error!("Failed to send close message to websocket: {:?}", v);
         }
     }
@@ -333,7 +395,21 @@ async fn ws_to_tcp_debug(x: &[u8]) {
     }
 }
 
-async fn ws_to_tcp_task(dir: &Direction, tcp_remote_port: u16, mut tcp_write: Arc<Mutex<OwnedWriteHalf>>, mut ws_read: Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>, shutdown_from_ws_tx: Sender<bool>, mut shutdown_from_tcp_rx: Receiver<bool>, address1: Arc<Mutex<String>>, con_status_map1: Arc<Mutex<HashMap<u16, ConnectionStatus>>>) -> (Arc<Mutex<OwnedWriteHalf>>, Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>) {
+async fn ws_to_tcp_task(
+    dir: &Direction,
+    tcp_remote_port: u16,
+    mut tcp_read: Arc<Mutex<OwnedReadHalf>>,
+    mut tcp_write: Arc<Mutex<OwnedWriteHalf>>,
+    mut ws_read: Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
+    mut ws_write: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
+    shutdown_from_ws_tx: Sender<bool>,
+    mut shutdown_from_tcp_rx: Receiver<bool>,
+    address1: Arc<Mutex<String>>,
+    con_status_map1: Arc<Mutex<HashMap<u16, ConnectionStatus>>>,
+    wait_for_socks_init_sender: Option<tokio::sync::mpsc::Sender<bool>>
+) -> (Arc<Mutex<OwnedWriteHalf>>, Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>) {
+    let wait_for_socks_init_sender_clone = wait_for_socks_init_sender.clone();
+    let mut init_state = true;
     loop {
         let ws_read_clone = ws_read.clone();
         let ws_read_lock = ws_read_clone.lock().await;
@@ -354,19 +430,51 @@ async fn ws_to_tcp_task(dir: &Direction, tcp_remote_port: u16, mut tcp_write: Ar
                         break;
                     }
                 };
+                let mut ignore_to_next_packet = false;
+                if init_state == false {
+                    ignore_to_next_packet = false;
+                }
                 match data {
                     Message::Binary(ref x) => {
-                        let addr = Arc::clone(&address1);
-                        debug!("ws got {} bytes from {}", x.len(), addr.lock().await);
+                        debug!("ws got {}", x.len());
+                        match dir {
+                            Direction::ClientSide => {
+                                // handle client socks5 requests like a socks5 proxy
+                                // proxy_socks5::handle_client_socks5_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
+                                init_state = false;
+                            }
+                            Direction::ServerSide => {
+                                // handle server socks5 requests like a socks5 client
+                                if init_state {
+                                    match proxy_socks5::handle_server_side_socks5_request(&x, x.len(), &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await {
+                                       Ok(_) => {
+                                            // ignore_to_next_packet = true;
+                                        }
+                                        Err(_) => {
+                                            error!("Failed to handle server socks5 request");
+                                        }
+                                    }
+                                    init_state = false;
+                                    if let Some(ref sender) = wait_for_socks_init_sender_clone {
+                                        debug!("send socks5 init done");
+                                        let _ = sender.send(true).await;
+                                    }
+                                }
+                            }
+                        }
+                        debug!("ignore_to_next_packet {} init_state {}", ignore_to_next_packet, init_state);
+                        if ignore_to_next_packet == false && init_state == false {
+                            let addr = Arc::clone(&address1);
+                            debug!("ws got {} bytes from {}", x.len(), addr.lock().await);
 
-                        ws_to_tcp_debug(x).await;
+                            ws_to_tcp_debug(x).await;
 
-                        if tcp_write.lock().await.write(x).await.is_err() {
-                            break;
-                        };
+                            if tcp_write.lock().await.write(x).await.is_err() {
+                                break;
+                            };
 
-                        ws_to_tcp_status(con_status_map1.clone(), tcp_remote_port, x).await;
-
+                            ws_to_tcp_status(con_status_map1.clone(), tcp_remote_port, x).await;
+                        }
                     }
                     Message::Close(m) => {
                         trace!("Encountered close message {:?}", m);
@@ -461,21 +569,32 @@ pub async fn serve_tcp_to_ws(
         let address1 = address.clone();
         let con_status_map1 = con_status_map_clone.clone();
         let dir_clone_1 = dir_clone.clone();
+
+        let tcp_read_arc = Arc::new(Mutex::new(tcp_read));
+        let tcp_read_arc_clone = tcp_read_arc.clone();
         let tcp_write_arc = Arc::new(Mutex::new(tcp_write));
         let tcp_write_arc_clone = tcp_write_arc.clone();
         let ws_read_arc = Arc::new(Mutex::new(ws_read));
         let ws_read_arc_clone = ws_read_arc.clone();
+        let ws_write_arc = Arc::new(Mutex::new(ws_write));
+        let ws_write_arc_clone = ws_write_arc.clone();
+
         let task_ws_to_tcp = tokio::spawn(async move {
-            ws_to_tcp_task(&dir_clone_1, tcp_remote_port, tcp_write_arc_clone, ws_read_arc_clone, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1).await
+            ws_to_tcp_task(&dir_clone_1, tcp_remote_port, tcp_read_arc_clone, tcp_write_arc_clone, ws_read_arc_clone, ws_write_arc_clone, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1, None).await
         });
+
         let address2 = address.clone();
         let con_status_map2 = con_status_map_clone.clone();
         // Consume from the tcp socket and write on the websocket.
         let dir_clone_2 = dir_clone.clone();
-        let tcp_write_arc_clone_2 = tcp_write_arc.clone();
+
+        let tcp_read_arc_clone = tcp_read_arc.clone();
+        let tcp_write_arc_clone = tcp_write_arc.clone();
         let ws_read_arc_clone = ws_read_arc.clone();
+        let ws_write_arc_clone = ws_write_arc.clone();
+
         let task_tcp_to_ws = tokio::spawn(async move {
-            tcp_to_ws_task(&dir_clone_2, tcp_remote_port, tcp_read, tcp_write_arc_clone_2, ws_read_arc_clone, ws_write, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
+            tcp_to_ws_task(&dir_clone_2, tcp_remote_port, tcp_read_arc_clone, tcp_write_arc_clone, ws_read_arc_clone, ws_write_arc_clone, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
         });
 
         let dir_clone_3 = dir_clone.clone();
