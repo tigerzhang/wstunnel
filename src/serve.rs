@@ -14,6 +14,7 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::StreamExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::oneshot::{Receiver, Sender};
+use tokio::task::JoinHandle;
 
 pub async fn serve_ws_to_tcp(
     bind_location: &str,
@@ -79,55 +80,59 @@ pub async fn serve_ws_to_tcp(
 
         // Finally, the cleanup task, all it does is close down the tcp connections.
         tokio::spawn(async move {
-            // Wait for both tasks to complete.
-            let (r_ws_to_tcp, r_tcp_to_ws) = tokio::join!(task_ws_to_tcp, task_tcp_to_ws);
-            if let Err(ref v) = r_ws_to_tcp {
-                error!(
+            clean_up_task(con_status_map_clone, &tcp_remote_port, task_ws_to_tcp, task_tcp_to_ws).await;
+        });
+    }
+    Ok(())
+}
+
+async fn clean_up_task(con_status_map_clone: Arc<Mutex<HashMap<u16, ConnectionStatus>>>, tcp_remote_port: &u16, task_ws_to_tcp: JoinHandle<(OwnedWriteHalf, SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>)>, task_tcp_to_ws: JoinHandle<(OwnedReadHalf, SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, bool)>) {
+// Wait for both tasks to complete.
+    let (r_ws_to_tcp, r_tcp_to_ws) = tokio::join!(task_ws_to_tcp, task_tcp_to_ws);
+    if let Err(ref v) = r_ws_to_tcp {
+        error!(
                 "Error joining: {:?}, dropping connection without proper close.",
                 v
             );
-                return;
-            }
-            let (dest_write, read) = r_ws_to_tcp.unwrap();
+        return;
+    }
+    let (dest_write, read) = r_ws_to_tcp.unwrap();
 
-            if let Err(ref v) = r_tcp_to_ws {
-                error!(
+    if let Err(ref v) = r_tcp_to_ws {
+        error!(
                 "Error joining: {:?}, dropping connection without proper close.",
                 v
             );
-                return;
-            }
-            let (dest_read, write, ws_need_close) = r_tcp_to_ws.unwrap();
+        return;
+    }
+    let (dest_read, write, ws_need_close) = r_tcp_to_ws.unwrap();
 
-            // Reunite the streams, this is guaranteed to succeed as we always use the correct parts.
-            let mut tcp_stream = dest_write.reunite(dest_read).unwrap();
-            if let Err(ref v) = tcp_stream.shutdown().await {
-                error!(
+    // Reunite the streams, this is guaranteed to succeed as we always use the correct parts.
+    let mut tcp_stream = dest_write.reunite(dest_read).unwrap();
+    if let Err(ref v) = tcp_stream.shutdown().await {
+        error!(
                 "Error properly closing the tcp from {:?}: {:?}",
                 tcp_stream.peer_addr(),
                 v
             );
-                return;
-            }
+        return;
+    }
 
-            if ws_need_close {
-                let mut ws_stream = write.reunite(read).unwrap();
-                if let Err(ref v) = ws_stream.get_mut().shutdown().await {
-                    error!(
+    if ws_need_close {
+        let mut ws_stream = write.reunite(read).unwrap();
+        if let Err(ref v) = ws_stream.get_mut().shutdown().await {
+            error!(
                     "Error properly closing the ws from {:?}: {:?}",
                     "something", v
                 );
-                    return;
-                }
-            }
-            debug!("Properly closed connections.");
-
-            let con_map = con_status_map_clone.clone();
-            let mut con = con_map.lock().unwrap();
-            con.remove(&tcp_remote_port);
-        });
+            return;
+        }
     }
-    Ok(())
+    debug!("Properly closed connections.");
+
+    let con_map = con_status_map_clone.clone();
+    let mut con = con_map.lock().unwrap();
+    con.remove(&tcp_remote_port);
 }
 
 async fn tcp_to_ws_task(tcp_remote_port: u16, mut tcp_read: OwnedReadHalf, mut ws_write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, mut shutdown_from_ws_rx: Receiver<bool>, shutdown_from_tcp_tx: Sender<bool>, address: Arc<Mutex<String>>, address2: Arc<Mutex<String>>, con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStatus>>>) -> (OwnedReadHalf, SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, bool) {
