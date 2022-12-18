@@ -343,7 +343,6 @@ pub async fn serve_tcp_to_ws(
         .await
         .expect("Could not bind to port");
     info!("Successfully bound to {:?}", bind_location);
-    let con_status_map_ = con_status_map.clone();
     loop {
         let dir_clone = (*dir).clone();
         let con_status_map_clone = con_status_map.clone();
@@ -375,8 +374,9 @@ pub async fn serve_tcp_to_ws(
             bytes_got: 0,
             bytes_sent: 0
         };
-        // let mut status = con_status_map_.lock().unwrap();
-        // status.insert(tcp.peer_addr().unwrap().port(), connection_status);
+        let con_status_map_clone = con_status_map.clone();
+        // let mut status = con_status_map_clone_2.lock().unwrap();
+        con_status_map_clone.lock().unwrap().insert(tcp.peer_addr().unwrap().port(), connection_status);
 
         info!("connecting {}", dest_location);
         let (ws, _) = match tokio_tungstenite::connect_async_trust_certificate(dest_location).await {
