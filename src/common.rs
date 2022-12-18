@@ -15,12 +15,13 @@ use std::{
 };
 use std::collections::HashMap;
 use tokio::io::{AsyncRead, AsyncWrite};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 use std::time::SystemTime;
+use tokio::sync::Mutex;
 use crate::{ConnectionStatus, ConnectionStatusCode};
 use crate::ConnectionStatusCode::CONNECTED;
 
-type ConStatus = Arc<Mutex<HashMap<u16, ConnectionStatus>>>;
+pub type ConStatus = Arc<Mutex<HashMap<u16, ConnectionStatus>>>;
 
 /// Address type in socks5.
 #[derive(Debug, Clone)]
@@ -335,7 +336,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                         Ok(v) => v,
                         Err(p) => {
                             let addr = Arc::clone(&address1);
-                            debug!("Err reading data {:?} {}", p, addr.lock().unwrap());
+                            debug!("Err reading data {:?} {}", p, addr.lock().await);
                             // dest_write.shutdown().await?;
                             break;
                         }
@@ -343,7 +344,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                     match data {
                         Message::Binary(ref x) => {
                             let addr = Arc::clone(&address1);
-                            debug!("ws got {} bytes from {}", x.len(), addr.lock().unwrap());
+                            debug!("ws got {} bytes from {}", x.len(), addr.lock().await);
                             if x.len() < 11 {
                                 debug!("ws got {:?}", x);
                             }
@@ -352,7 +353,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                             };
 
                             let con_map = con_status_map1.clone();
-                            let mut status = con_map.lock().unwrap();
+                            let mut status = con_map.lock().await;
                             if status.contains_key(&tcp_remote_port) {
                                 let status = status.get_mut(&tcp_remote_port).unwrap();
                                 status.bytes_got += x.len() as u32;
@@ -380,7 +381,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                 }
             }
         }
-        debug!("Reached end of consume from websocket. {}", address1.lock().unwrap());
+        debug!("Reached end of consume from websocket. {}", address1.lock().await);
         if let Err(_) = shutdown_from_ws_tx.send(true) {
             // This happens if the shutdown happens from the other side.
             // error!("Could not send shutdown signal: {:?}", v);
@@ -402,7 +403,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                     match res {
                         Ok(0) => {
                             let addr = Arc::clone(&address2);
-                            warn!("tcp read 0 byte. Remote tcp socket has closed, sending close message on websocket. {}", addr.lock().unwrap());
+                            warn!("tcp read 0 byte. Remote tcp socket has closed, sending close message on websocket. {}", addr.lock().await);
                             break;
                             // debug!("tcp read 0 byte");
                         }
@@ -411,12 +412,12 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                                 debug!("tcp read {:?}", &buf[0..n]);
                             } else {
                                 let addr = Arc::clone(&address2);
-                                debug!("tcp read {} bytes {} ", n, addr.lock().unwrap());
+                                debug!("tcp read {} bytes {} ", n, addr.lock().await);
                             }
 
                             {
                                 let con_map = con_status_map2.clone();
-                                let mut status = con_map.lock().unwrap();
+                                let mut status = con_map.lock().await;
                                 if status.contains_key(&tcp_remote_port) {
                                     let status = status.get_mut(&tcp_remote_port).unwrap();
                                     status.bytes_sent += n as u32;
@@ -427,7 +428,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
                                 // buf[2] reserved
                                 let addr = Arc::clone(&address2);
                                 let addr_str = Address::read_from_buf(&buf, 3).await.unwrap().to_string();
-                                let mut value = addr.lock().unwrap();
+                                let mut value = addr.lock().await;
                                 // *value = "abc".to_string();
                                 *value = addr_str.clone();
 
@@ -435,7 +436,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
 
                                 {
                                     let con_map = con_status_map2.clone();
-                                    let mut status = con_map.lock().unwrap();
+                                    let mut status = con_map.lock().await;
                                     if status.contains_key(&tcp_remote_port) {
                                         let status = status.get_mut(&tcp_remote_port).unwrap();
                                         status.address = addr_str.clone();
@@ -494,7 +495,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
             // This happens if the shutdown happens from the other side.
             // error!("Could not send shutdown signal: {:?}", v);
         }
-        warn!("Reached end of consume from tcp. {}", address.lock().unwrap());
+        warn!("Reached end of consume from tcp. {}", address.lock().await);
         (dest_read, write, need_close)
     });
 
@@ -544,16 +545,17 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
         debug!("Properly closed connections.");
 
         let con_map = con_status_map.clone();
-        let mut con = con_map.lock().unwrap();
+        let mut con = con_map.lock().await;
         con.remove(&tcp_remote_port);
     });
 
     Ok(())
 }
 
+#[derive(Clone)]
 pub enum Direction {
-    WsToTcp,
-    TcpToWs,
+    ServerSide,
+    ClientSide,
 }
 
 pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction, con_status_map: ConStatus) -> Result<(), Error> {
@@ -564,7 +566,7 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction, co
 
     loop {
         let in1 = match dir {
-            Direction::WsToTcp => {
+            Direction::ServerSide => {
                 let (socket, _) = listener
                     .accept()
                     .await
@@ -576,7 +578,7 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction, co
                 );
                 TcpOrDestination::Tcp(socket)
             }
-            Direction::TcpToWs => {
+            Direction::ClientSide => {
                 let proto_addition = if &dest_location[..2] != "ws" {
                     "ws://"
                 } else {
@@ -586,8 +588,8 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction, co
             }
         };
         let in2 = match dir {
-            Direction::WsToTcp => TcpOrDestination::Dest(dest_location.to_owned()),
-            Direction::TcpToWs => {
+            Direction::ServerSide => TcpOrDestination::Dest(dest_location.to_owned()),
+            Direction::ClientSide => {
                 let (socket, _) = listener
                     .accept()
                     .await
@@ -612,7 +614,7 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: &Direction, co
                     bytes_sent: 0
                 };
                 let con_status_map_ = con_status_map.clone();
-                let mut status = con_status_map_.lock().unwrap();
+                let mut status = con_status_map_.lock().await;
                 status.insert(socket.peer_addr().unwrap().port(), connection_status);
                 TcpOrDestination::Tcp(socket)
             }

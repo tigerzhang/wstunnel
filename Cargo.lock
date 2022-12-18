@@ -1442,6 +1442,7 @@ dependencies = [
 [[package]]
 name = "tokio-tungstenite"
 version = "0.17.1"
+source = "git+https://github.com/tigerzhang/tokio-tungstenite#6390fabd5959186bf652d7c77eeb6bb23008ac88"
 dependencies = [
  "futures-util",
  "log",
@@ -1891,7 +1892,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "504a2476202769977a040c6364301a3f65d0cc9e3fb08600b2bda150a0488316"
 
 [[package]]
-name = "ws_bridge_rs"
+name = "wstunnel"
 version = "0.1.0"
 dependencies = [
  "clap",

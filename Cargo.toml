@@ -1,15 +1,15 @@
 cargo-features = ["strip"]
 
 [package]
-name = "ws_bridge_rs"
+name = "wstunnel"
 version = "0.1.0"
-authors = ["Ivor Wanders <ivor@iwanders.net>"]
+authors = ["wstunnel<me@wstennel.net>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 clap = "2.33.3"
-tokio-tungstenite = { path = "../tokio-tungstenite", features = ["native-tls"] }
+tokio-tungstenite = { git = "https://github.com/tigerzhang/tokio-tungstenite", features = ["native-tls"] }
 tokio = { version = "1.15", features = ["rt", "net", "rt-multi-thread", "io-util", "sync", "macros", "full", "tracing"] }
 warp = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
