@@ -1,15 +1,19 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use futures_util::SinkExt;
 use log::{debug, error, info, trace, warn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::{accept_async, tungstenite};
+use tokio_tungstenite::{accept_async, MaybeTlsStream, tungstenite, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message;
-use crate::common;
+use crate::{common, ConnectionStatus};
 use crate::common::{ConStatus, Direction, Address};
 use crate::ConnectionStatusCode::CONNECTED;
 use std::time::SystemTime;
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::StreamExt;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::oneshot::{Receiver, Sender};
 
 pub async fn serve_ws_to_tcp(
     bind_location: &str,
@@ -64,178 +68,13 @@ pub async fn serve_ws_to_tcp(
         let address1 = address.clone();
         let con_status_map1 = con_status_map_clone.clone();
         let task_ws_to_tcp = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    message = ws_read.next() => {
-                        if message.is_none() {
-                            debug!("Got none, end of websocket stream.");
-                            break;
-                        }
-                        let message = message.unwrap();
-                        let data = match message {
-                            Ok(v) => v,
-                            Err(p) => {
-                                let addr = Arc::clone(&address1);
-                                debug!("Err reading data {:?} {}", p, addr.lock().unwrap());
-                                // dest_write.shutdown().await?;
-                                break;
-                            }
-                        };
-                        match data {
-                            Message::Binary(ref x) => {
-                                let addr = Arc::clone(&address1);
-                                debug!("ws got {} bytes from {}", x.len(), addr.lock().unwrap());
-                                if x.len() < 11 {
-                                    debug!("ws got {:?}", x);
-                                }
-                                if tcp_write.write(x).await.is_err() {
-                                    break;
-                                };
-
-                                let con_map = con_status_map1.clone();
-                                let mut status = con_map.lock().unwrap();
-                                if status.contains_key(&tcp_remote_port) {
-                                    let status = status.get_mut(&tcp_remote_port).unwrap();
-                                    status.bytes_got += x.len() as u32;
-                                    if x.len() == 2 && x[0] == 5 && x[1] == 0 {
-                                        // handshake ack
-                                        status.status = CONNECTED;
-                                        status.last_active = SystemTime::now();
-                                    }
-                                }
-                            }
-                            Message::Close(m) => {
-                                trace!("Encountered close message {:?}", m);
-                                // dest_write.shutdown().await?;
-                                // need to somehow shut down the tcp socket here as well.
-                            }
-                            other => {
-                                error!("Something unhandled on the websocket: {:?}", other);
-                                // dest_write.shutdown().await?;
-                            }
-                        }
-                    },
-                    _shutdown_received = (&mut shutdown_from_tcp_rx ) =>
-                    {
-                        break;
-                    }
-                }
-            }
-            debug!("Reached end of consume from websocket. {}", address1.lock().unwrap());
-            if let Err(_) = shutdown_from_ws_tx.send(true) {
-                // This happens if the shutdown happens from the other side.
-                // error!("Could not send shutdown signal: {:?}", v);
-            }
-            (tcp_write, ws_read)
+            ws_to_tcp_task(tcp_remote_port, tcp_write, ws_read, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1).await
         });
         let address2 = address.clone();
         let con_status_map2 = con_status_map_clone.clone();
         // Consume from the tcp socket and write on the websocket.
         let task_tcp_to_ws = tokio::spawn(async move {
-            let mut need_close = true;
-            let mut buf = vec![0; 1024 * 1024];
-            loop {
-                tokio::select! {
-                    res = tcp_read.read(&mut buf) => {
-                        // Return value of `Ok(0)` signifies that the remote has closed, if this happens
-                        // we want to initiate shutting down the websocket.
-                        match res {
-                            Ok(0) => {
-                                let addr = Arc::clone(&address2);
-                                warn!("tcp read 0 byte. Remote tcp socket has closed, sending close message on websocket. {}", addr.lock().unwrap());
-                                break;
-                                // debug!("tcp read 0 byte");
-                            }
-                            Ok(n) => {
-                                if n < 11 {
-                                    debug!("tcp read {:?}", &buf[0..n]);
-                                } else {
-                                    let addr = Arc::clone(&address2);
-                                    debug!("tcp read {} bytes {} ", n, addr.lock().unwrap());
-                                }
-
-                                {
-                                    let con_map = con_status_map2.clone();
-                                    let mut status = con_map.lock().unwrap();
-                                    if status.contains_key(&tcp_remote_port) {
-                                        let status = status.get_mut(&tcp_remote_port).unwrap();
-                                        status.bytes_sent += n as u32;
-                                    }
-                                }
-
-                                if n > 3 && buf[0] == 5 && buf[1] == 1 {
-                                    // buf[2] reserved
-                                    let addr = Arc::clone(&address2);
-                                    let addr_str = Address::read_from_buf(&buf, 3).await.unwrap().to_string();
-                                    let mut value = addr.lock().unwrap();
-                                    // *value = "abc".to_string();
-                                    *value = addr_str.clone();
-
-                                    info!("Connecting {}. remote port {}", addr_str.clone(), tcp_remote_port);
-
-                                    {
-                                        let con_map = con_status_map2.clone();
-                                        let mut status = con_map.lock().unwrap();
-                                        if status.contains_key(&tcp_remote_port) {
-                                            let status = status.get_mut(&tcp_remote_port).unwrap();
-                                            status.address = addr_str.clone();
-                                        }
-                                    }
-
-                                    // debug!("{}", addr);
-
-                                    // if addr_str.contains("canhazip.com") {
-                                    //     // info!("{:?}", con_status_map2.lock().unwrap());
-                                    //     let con_map = con_status_map2.lock().unwrap();
-                                    //     for key in con_map.keys() {
-                                    //         info!("{}: {:?}", key, con_map.get(key).unwrap());
-                                    //     }
-                                    // }
-                                }
-                                let _addr = Arc::clone(&address2);
-                                // debug!("ws send {} bytes", n);
-                                let res = buf[..n].to_vec();
-                                match ws_write.send(Message::Binary(res)).await {
-                                    Ok(_) => {
-                                        continue;
-                                    }
-                                    Err(v) => {
-                                        debug!("Failed to send binary data on ws: {:?}", v);
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                // Unexpected socket error. There isn't much we can do here so just stop
-                                // processing, and close the tcp socket.
-                                error!(
-                                    "Something unexpected happened reading from the tcp socket: {:?}",
-                                    e
-                                );
-                                break;
-                            }
-                        }
-                    },
-                    _shutdown_received = (&mut shutdown_from_ws_rx ) =>
-                    {
-                        need_close = false;
-                        break;
-                    }
-                }
-            }
-
-            // Send the websocket close message.
-            if need_close {
-                if let Err(v) = ws_write.send(Message::Close(None)).await {
-                    error!("Failed to send close message to websocket: {:?}", v);
-                }
-            }
-            if let Err(_) = shutdown_from_tcp_tx.send(true) {
-                // This happens if the shutdown happens from the other side.
-                // error!("Could not send shutdown signal: {:?}", v);
-            }
-            warn!("Reached end of consume from tcp. {}", address.lock().unwrap());
-            (tcp_read, ws_write, need_close)
+            tcp_to_ws_task(tcp_remote_port, tcp_read, ws_write, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
         });
 
         // Finally, the cleanup task, all it does is close down the tcp connections.
@@ -289,6 +128,179 @@ pub async fn serve_ws_to_tcp(
         });
     }
     Ok(())
+}
+
+async fn tcp_to_ws_task(tcp_remote_port: u16, mut tcp_read: OwnedReadHalf, mut ws_write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, mut shutdown_from_ws_rx: Receiver<bool>, shutdown_from_tcp_tx: Sender<bool>, address: Arc<Mutex<String>>, address2: Arc<Mutex<String>>, con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStatus>>>) -> (OwnedReadHalf, SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, bool) {
+    let mut need_close = true;
+    let mut buf = vec![0; 1024 * 1024];
+    loop {
+        tokio::select! {
+            res = tcp_read.read(&mut buf) => {
+                // Return value of `Ok(0)` signifies that the remote has closed, if this happens
+                // we want to initiate shutting down the websocket.
+                match res {
+                    Ok(0) => {
+                        let addr = Arc::clone(&address2);
+                        warn!("tcp read 0 byte. Remote tcp socket has closed, sending close message on websocket. {}", addr.lock().unwrap());
+                        break;
+                        // debug!("tcp read 0 byte");
+                    }
+                    Ok(n) => {
+                        if n < 11 {
+                            debug!("tcp read {:?}", &buf[0..n]);
+                        } else {
+                            let addr = Arc::clone(&address2);
+                            debug!("tcp read {} bytes {} ", n, addr.lock().unwrap());
+                        }
+
+                        {
+                            let con_map = con_status_map2.clone();
+                            let mut status = con_map.lock().unwrap();
+                            if status.contains_key(&tcp_remote_port) {
+                                let status = status.get_mut(&tcp_remote_port).unwrap();
+                                status.bytes_sent += n as u32;
+                            }
+                        }
+
+                        if n > 3 && buf[0] == 5 && buf[1] == 1 {
+                            // buf[2] reserved
+                            let addr = Arc::clone(&address2);
+                            let addr_str = Address::read_from_buf(&buf, 3).await.unwrap().to_string();
+                            let mut value = addr.lock().unwrap();
+                            // *value = "abc".to_string();
+                            *value = addr_str.clone();
+
+                            info!("Connecting {}. remote port {}", addr_str.clone(), tcp_remote_port);
+
+                            {
+                                let con_map = con_status_map2.clone();
+                                let mut status = con_map.lock().unwrap();
+                                if status.contains_key(&tcp_remote_port) {
+                                    let status = status.get_mut(&tcp_remote_port).unwrap();
+                                    status.address = addr_str.clone();
+                                }
+                            }
+
+                            // debug!("{}", addr);
+
+                            // if addr_str.contains("canhazip.com") {
+                            //     // info!("{:?}", con_status_map2.lock().unwrap());
+                            //     let con_map = con_status_map2.lock().unwrap();
+                            //     for key in con_map.keys() {
+                            //         info!("{}: {:?}", key, con_map.get(key).unwrap());
+                            //     }
+                            // }
+                        }
+                        let _addr = Arc::clone(&address2);
+                        // debug!("ws send {} bytes", n);
+                        let res = buf[..n].to_vec();
+                        match ws_write.send(Message::Binary(res)).await {
+                            Ok(_) => {
+                                continue;
+                            }
+                            Err(v) => {
+                                debug!("Failed to send binary data on ws: {:?}", v);
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Unexpected socket error. There isn't much we can do here so just stop
+                        // processing, and close the tcp socket.
+                        error!(
+                            "Something unexpected happened reading from the tcp socket: {:?}",
+                            e
+                        );
+                        break;
+                    }
+                }
+            },
+            _shutdown_received = (&mut shutdown_from_ws_rx ) =>
+            {
+                need_close = false;
+                break;
+            }
+        }
+    }
+
+    // Send the websocket close message.
+    if need_close {
+        if let Err(v) = ws_write.send(Message::Close(None)).await {
+            error!("Failed to send close message to websocket: {:?}", v);
+        }
+    }
+    if let Err(_) = shutdown_from_tcp_tx.send(true) {
+        // This happens if the shutdown happens from the other side.
+        // error!("Could not send shutdown signal: {:?}", v);
+    }
+    warn!("Reached end of consume from tcp. {}", address.lock().unwrap());
+    (tcp_read, ws_write, need_close)
+}
+
+async fn ws_to_tcp_task(tcp_remote_port: u16, mut tcp_write: OwnedWriteHalf, mut ws_read: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>, shutdown_from_ws_tx: Sender<bool>, mut shutdown_from_tcp_rx: Receiver<bool>, address1: Arc<Mutex<String>>, con_status_map1: Arc<Mutex<HashMap<u16, ConnectionStatus>>>) -> (OwnedWriteHalf, SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>) {
+    loop {
+        tokio::select! {
+            message = ws_read.next() => {
+                if message.is_none() {
+                    debug!("Got none, end of websocket stream.");
+                    break;
+                }
+                let message = message.unwrap();
+                let data = match message {
+                    Ok(v) => v,
+                    Err(p) => {
+                        let addr = Arc::clone(&address1);
+                        debug!("Err reading data {:?} {}", p, addr.lock().unwrap());
+                        // dest_write.shutdown().await?;
+                        break;
+                    }
+                };
+                match data {
+                    Message::Binary(ref x) => {
+                        let addr = Arc::clone(&address1);
+                        debug!("ws got {} bytes from {}", x.len(), addr.lock().unwrap());
+                        if x.len() < 11 {
+                            debug!("ws got {:?}", x);
+                        }
+                        if tcp_write.write(x).await.is_err() {
+                            break;
+                        };
+
+                        let con_map = con_status_map1.clone();
+                        let mut status = con_map.lock().unwrap();
+                        if status.contains_key(&tcp_remote_port) {
+                            let status = status.get_mut(&tcp_remote_port).unwrap();
+                            status.bytes_got += x.len() as u32;
+                            if x.len() == 2 && x[0] == 5 && x[1] == 0 {
+                                // handshake ack
+                                status.status = CONNECTED;
+                                status.last_active = SystemTime::now();
+                            }
+                        }
+                    }
+                    Message::Close(m) => {
+                        trace!("Encountered close message {:?}", m);
+                        // dest_write.shutdown().await?;
+                        // need to somehow shut down the tcp socket here as well.
+                    }
+                    other => {
+                        error!("Something unhandled on the websocket: {:?}", other);
+                        // dest_write.shutdown().await?;
+                    }
+                }
+            },
+            _shutdown_received = (&mut shutdown_from_tcp_rx ) =>
+            {
+                break;
+            }
+        }
+    }
+    debug!("Reached end of consume from websocket. {}", address1.lock().unwrap());
+    if let Err(_) = shutdown_from_ws_tx.send(true) {
+        // This happens if the shutdown happens from the other side.
+        // error!("Could not send shutdown signal: {:?}", v);
+    }
+    (tcp_write, ws_read)
 }
 
 pub async fn serve_tcp_to_ws(
