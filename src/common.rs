@@ -20,7 +20,7 @@ use std::time::SystemTime;
 use crate::{ConnectionStatus, ConnectionStatusCode};
 use crate::ConnectionStatusCode::CONNECTED;
 
-type ConStatus = Arc<Mutex<HashMap<u16, ConnectionStatus>>>;
+pub type ConStatus = Arc<Mutex<HashMap<u16, ConnectionStatus>>>;
 
 /// Address type in socks5.
 #[derive(Debug, Clone)]

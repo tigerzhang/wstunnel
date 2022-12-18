@@ -9,10 +9,12 @@ use log::{LevelFilter};
 type Error = Box<dyn std::error::Error>;
 
 mod common;
+mod serve;
 
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use warp::Filter;
+use crate::common::Direction;
 // use console_subscriber;
 
 #[derive(Debug)]
@@ -165,8 +167,15 @@ async fn main() -> Result<(), Error>{
     });
 
     let tunnel = tokio::spawn(async move {
-        let res = common::serve(&bind_value, &dest_value, &direction, con_status_map.clone()).await;
-        panic!("Serve returned with {:?}", res);
+        match direction {
+            Direction::WsToTcp => {
+                let _ = serve::serve_ws_to_tcp(&bind_value, &dest_value, con_status_map).await;
+            }
+            Direction::TcpToWs => {
+                let res = common::serve(&bind_value, &dest_value, &direction, con_status_map.clone()).await;
+                panic!("Serve returned with {:?}", res);
+            }
+        }
     });
 
     // 如果 tunnel 退出，整个 app 应该退出
