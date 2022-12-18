@@ -169,7 +169,7 @@ async fn main() -> Result<(), Error>{
     let tunnel = tokio::spawn(async move {
         match direction {
             Direction::WsToTcp => {
-                let _ = serve::serve_ws_to_tcp(&bind_value, &dest_value, con_status_map).await;
+                let _ = serve::serve_ws_to_tcp(&bind_value, &dest_value, &direction, con_status_map).await;
             }
             Direction::TcpToWs => {
                 let res = common::serve(&bind_value, &dest_value, &direction, con_status_map.clone()).await;

@@ -551,6 +551,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination, con_
     Ok(())
 }
 
+#[derive(Clone)]
 pub enum Direction {
     WsToTcp,
     TcpToWs,
