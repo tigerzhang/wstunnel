@@ -113,30 +113,49 @@ async fn clean_up_task(dir: &Direction, con_status_map_clone: Arc<Mutex<HashMap<
     let (dest_read, write, ws_need_close) = r_tcp_to_ws.unwrap();
 
     // Reunite the streams, this is guaranteed to succeed as we always use the correct parts.
-    let mut tcp_stream = dest_write.reunite(dest_read).unwrap();
-    if let Err(ref v) = tcp_stream.shutdown().await {
-        error!(
+    match Arc::try_unwrap(dest_write) {
+        Ok(u) => {
+            // let u = Arc::try_unwrap(dest_write_clone).unwrap();
+            // let dest_write_clone_2 = dest_write_clone.lock().await.into_inner();
+            let o = u.into_inner();
+            let mut tcp_stream = dest_read.reunite(o).unwrap();
+            if let Err(ref v) = tcp_stream.shutdown().await {
+                error!(
                 "Error properly closing the tcp from {:?}: {:?}",
                 tcp_stream.peer_addr(),
                 v
             );
-        return;
+                return;
+            }
+        }
+        Err(e) => {
+            error!("Could not unwrap the Arc, this should never happen {:?}", e);
+        }
     }
 
     if ws_need_close {
-        let mut ws_stream = write.reunite(read).unwrap();
-        if let Err(ref v) = ws_stream.get_mut().shutdown().await {
-            error!(
+        let u = Arc::try_unwrap(read);
+        match u {
+            Ok(u) => {
+                let o = u.into_inner();
+                let mut ws_stream = o.reunite(write).unwrap();
+                if let Err(ref v) = ws_stream.get_mut().shutdown().await {
+                    error!(
                     "Error properly closing the ws from {:?}: {:?}",
                     "something", v
                 );
-            return;
+                    return;
+                }
+            }
+            Err(e) => {
+                error!("Could not unwrap the Arc, this should never happen {:?}", e);
+            }
         }
     }
     debug!("Properly closed connections.");
 
     let con_map = con_status_map_clone.clone();
-    let mut con = con_map.lock().unwrap();
+    let mut con = con_map.lock().await;
     con.remove(&tcp_remote_port);
 }
 
