@@ -172,8 +172,9 @@ async fn main() -> Result<(), Error>{
                 let _ = serve::serve_ws_to_tcp(&bind_value, &dest_value, &direction, con_status_map).await;
             }
             Direction::TcpToWs => {
-                let res = common::serve(&bind_value, &dest_value, &direction, con_status_map.clone()).await;
-                panic!("Serve returned with {:?}", res);
+                // let res = common::serve(&bind_value, &dest_value, &direction, con_status_map.clone()).await;
+                // panic!("Serve returned with {:?}", res);
+                let _ = serve::serve_tcp_to_ws(&bind_value, &dest_value, &direction, con_status_map).await;
             }
         }
     });

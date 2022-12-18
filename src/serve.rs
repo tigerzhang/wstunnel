@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::{MaybeTlsStream, tungstenite, WebSocketStream};
 use tokio_tungstenite::tungstenite::Message;
-use crate::{common, ConnectionStatus};
+use crate::{common, ConnectionStatus, ConnectionStatusCode};
 use crate::common::{ConStatus, Direction, Address};
 use crate::ConnectionStatusCode::CONNECTED;
 use std::time::SystemTime;
@@ -337,8 +337,87 @@ pub async fn serve_tcp_to_ws(
     bind_location: &str,
     dest_location: &str,
     dir: &Direction,
-    con_status: ConStatus
+    con_status_map: ConStatus
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind(bind_location)
+        .await
+        .expect("Could not bind to port");
+    info!("Successfully bound to {:?}", bind_location);
+    let con_status_map_ = con_status_map.clone();
+    loop {
+        let dir_clone = (*dir).clone();
+        let con_status_map_clone = con_status_map.clone();
+        let proto_addition = if &dest_location[..2] != "ws" {
+            "ws://"
+        } else {
+            ""
+        };
+       let dest_location = proto_addition.to_owned() + dest_location;
+
+        let (mut tcp, _) = listener
+            .accept()
+            .await
+            .expect("Could not accept connection?");
+        let peer_addr = match tcp.peer_addr() {
+            Ok(addr)=> addr,
+            Err(error)=> {
+                error!("{}", error);
+                return Err(Box::new(error));
+            }
+        };
+
+        info!("Accepting tcp connection from {:?}",peer_addr);
+
+        let connection_status = ConnectionStatus {
+            status: ConnectionStatusCode::NEW,
+            address: String::new(),
+            last_active: SystemTime::now(),
+            bytes_got: 0,
+            bytes_sent: 0
+        };
+        // let mut status = con_status_map_.lock().unwrap();
+        // status.insert(tcp.peer_addr().unwrap().port(), connection_status);
+
+        info!("connecting {}", dest_location);
+        let (ws, _) = match tokio_tungstenite::connect_async_trust_certificate(dest_location).await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Something went wrong connecting {:?}", e);
+                tcp.shutdown().await?;
+                return Err(Box::new(e));
+            }
+        };
+
+        let tcp_remote_port = tcp.peer_addr().unwrap().port();
+
+        // We got the tcp connection setup, split both streams in their read and write parts
+        let (mut tcp_read, mut tcp_write) = tcp.into_split();
+        let (mut ws_write, mut ws_read) = ws.split();
+        let (shutdown_from_ws_tx, mut shutdown_from_ws_rx) = tokio::sync::oneshot::channel::<bool>();
+        let (shutdown_from_tcp_tx, mut shutdown_from_tcp_rx) = tokio::sync::oneshot::channel::<bool>();
+
+        let address = Arc::new(Mutex::new(String::from("xxx")));
+
+        let address1 = address.clone();
+        let con_status_map1 = con_status_map_clone.clone();
+        let dir_clone_1 = dir_clone.clone();
+        let task_ws_to_tcp = tokio::spawn(async move {
+            ws_to_tcp_task(&dir_clone_1, tcp_remote_port, tcp_write, ws_read, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1).await
+        });
+        let address2 = address.clone();
+        let con_status_map2 = con_status_map_clone.clone();
+        // Consume from the tcp socket and write on the websocket.
+        let dir_clone_2 = dir_clone.clone();
+        let task_tcp_to_ws = tokio::spawn(async move {
+            tcp_to_ws_task(&dir_clone_2, tcp_remote_port, tcp_read, ws_write, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
+        });
+
+        let dir_clone_3 = dir_clone.clone();
+        // Finally, the cleanup task, all it does is close down the tcp connections.
+        tokio::spawn(async move {
+            clean_up_task(&dir_clone_3, con_status_map_clone, &tcp_remote_port, task_ws_to_tcp, task_tcp_to_ws).await;
+        });
+    }
     Ok(())
 }
 
@@ -353,7 +432,7 @@ pub async fn serve_separate(
             serve_ws_to_tcp(bind_location, dest_location, dir, con_status_map.clone()).await
         }
         Direction::TcpToWs => {
-            serve_tcp_to_ws(bind_location, dest_location, dir, con_status_map).await
+            serve_tcp_to_ws(bind_location, dest_location, dir, con_status_map.clone()).await
         }
     }
 }
