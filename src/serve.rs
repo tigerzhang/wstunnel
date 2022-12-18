@@ -140,6 +140,56 @@ async fn clean_up_task(dir: &Direction, con_status_map_clone: Arc<Mutex<HashMap<
     con.remove(&tcp_remote_port);
 }
 
+async fn tcp_to_ws_debug(buf: &Vec<u8>, n: usize, address2: Arc<Mutex<String>>) {
+    if n < 11 {
+        debug!("tcp read {:?}", &buf[0..n]);
+    } else {
+        let addr = Arc::clone(&address2);
+        debug!("tcp read {} bytes {} ", n, addr.lock().unwrap());
+    }
+}
+
+async fn tcp_to_ws_status(con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStatus>>>, address2: Arc<Mutex<String>>, tcp_remote_port: u16, buf: &Vec<u8>, n: usize) {
+    {
+        let con_map = con_status_map2.clone();
+        let mut status = con_map.lock().unwrap();
+        if status.contains_key(&tcp_remote_port) {
+            let status = status.get_mut(&tcp_remote_port).unwrap();
+            status.bytes_sent += n as u32;
+        }
+    }
+
+    if n > 3 && buf[0] == 5 && buf[1] == 1 {
+        // buf[2] reserved
+        let addr = Arc::clone(&address2);
+        let addr_str = Address::read_from_buf(&buf, 3).await.unwrap().to_string();
+        let mut value = addr.lock().unwrap();
+        // *value = "abc".to_string();
+        *value = addr_str.clone();
+
+        info!("Connecting {}. remote port {}", addr_str.clone(), tcp_remote_port);
+
+        {
+            let con_map = con_status_map2.clone();
+            let mut status = con_map.lock().unwrap();
+            if status.contains_key(&tcp_remote_port) {
+                let status = status.get_mut(&tcp_remote_port).unwrap();
+                status.address = addr_str.clone();
+            }
+        }
+
+        // debug!("{}", addr);
+
+        // if addr_str.contains("canhazip.com") {
+        //     // info!("{:?}", con_status_map2.lock().unwrap());
+        //     let con_map = con_status_map2.lock().unwrap();
+        //     for key in con_map.keys() {
+        //         info!("{}: {:?}", key, con_map.get(key).unwrap());
+        //     }
+        // }
+    }
+}
+
 async fn tcp_to_ws_task(dir: &Direction, tcp_remote_port: u16, mut tcp_read: OwnedReadHalf, mut ws_write: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, mut shutdown_from_ws_rx: Receiver<bool>, shutdown_from_tcp_tx: Sender<bool>, address: Arc<Mutex<String>>, address2: Arc<Mutex<String>>, con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStatus>>>) -> (OwnedReadHalf, SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>, bool) {
     let mut need_close = true;
     let mut buf = vec![0; 1024 * 1024];
@@ -156,51 +206,10 @@ async fn tcp_to_ws_task(dir: &Direction, tcp_remote_port: u16, mut tcp_read: Own
                         // debug!("tcp read 0 byte");
                     }
                     Ok(n) => {
-                        if n < 11 {
-                            debug!("tcp read {:?}", &buf[0..n]);
-                        } else {
-                            let addr = Arc::clone(&address2);
-                            debug!("tcp read {} bytes {} ", n, addr.lock().unwrap());
-                        }
+                        tcp_to_ws_debug(&buf, n, address2.clone()).await;
 
-                        {
-                            let con_map = con_status_map2.clone();
-                            let mut status = con_map.lock().unwrap();
-                            if status.contains_key(&tcp_remote_port) {
-                                let status = status.get_mut(&tcp_remote_port).unwrap();
-                                status.bytes_sent += n as u32;
-                            }
-                        }
+                        tcp_to_ws_status(con_status_map2.clone(), address2.clone(), tcp_remote_port, &buf, n).await;
 
-                        if n > 3 && buf[0] == 5 && buf[1] == 1 {
-                            // buf[2] reserved
-                            let addr = Arc::clone(&address2);
-                            let addr_str = Address::read_from_buf(&buf, 3).await.unwrap().to_string();
-                            let mut value = addr.lock().unwrap();
-                            // *value = "abc".to_string();
-                            *value = addr_str.clone();
-
-                            info!("Connecting {}. remote port {}", addr_str.clone(), tcp_remote_port);
-
-                            {
-                                let con_map = con_status_map2.clone();
-                                let mut status = con_map.lock().unwrap();
-                                if status.contains_key(&tcp_remote_port) {
-                                    let status = status.get_mut(&tcp_remote_port).unwrap();
-                                    status.address = addr_str.clone();
-                                }
-                            }
-
-                            // debug!("{}", addr);
-
-                            // if addr_str.contains("canhazip.com") {
-                            //     // info!("{:?}", con_status_map2.lock().unwrap());
-                            //     let con_map = con_status_map2.lock().unwrap();
-                            //     for key in con_map.keys() {
-                            //         info!("{}: {:?}", key, con_map.get(key).unwrap());
-                            //     }
-                            // }
-                        }
                         let _addr = Arc::clone(&address2);
                         // debug!("ws send {} bytes", n);
                         let res = buf[..n].to_vec();
