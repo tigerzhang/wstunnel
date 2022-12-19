@@ -319,8 +319,8 @@ async fn handle_tcp_incoming_task(
                                         // drop client greeting request
                                         not_forward_current_packet = true;
                                     }
-                                    client_side_socks_proxy_state = ClientSideSocksProxyState::ConnectProxyDone;
-                                } else if client_side_socks_proxy_state == ClientSideSocksProxyState::ConnectProxyDone {
+                                    client_side_socks_proxy_state = ClientSideSocksProxyState::GreetingProxyDone;
+                                } else if client_side_socks_proxy_state == ClientSideSocksProxyState::GreetingProxyDone{
                                     // handle client socks5 requests like a socks5 proxy
                                     let r = proxy_socks5::handle_client_socks5_connect_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
                                     if r.is_ok() {
@@ -343,8 +343,8 @@ async fn handle_tcp_incoming_task(
                                             error!("Error handling server side socks5 response: {:?}", e);
                                         }
                                     }
-                                    server_side_socks_proxy_state = ServerSideSocksProxyState::ConnectProxyDone;
-                                } else if server_side_socks_proxy_state == ServerSideSocksProxyState::ConnectProxyDone {
+                                    server_side_socks_proxy_state = ServerSideSocksProxyState::GreetingProxyDone;
+                                } else if server_side_socks_proxy_state == ServerSideSocksProxyState::GreetingProxyDone {
                                     match proxy_socks5::handle_server_side_socks5_connect_response(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await {
                                         Ok(_) => {
                                             // drop server greeting response
