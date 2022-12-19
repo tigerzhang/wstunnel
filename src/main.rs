@@ -173,12 +173,12 @@ async fn main() -> Result<(), Error>{
     let tunnel = tokio::spawn(async move {
         match direction {
             Direction::ServerSide => {
-                let _ = serve::serve_ws_to_tcp(&bind_value, &dest_value, &direction, con_status_map).await;
+                let _ = serve::serve_server_side(&bind_value, &dest_value, &direction, con_status_map).await;
             }
             Direction::ClientSide => {
                 // let res = common::serve(&bind_value, &dest_value, &direction, con_status_map.clone()).await;
                 // panic!("Serve returned with {:?}", res);
-                let _ = serve::serve_tcp_to_ws(&bind_value, &dest_value, &direction, con_status_map).await;
+                let _ = serve::serve_client_side(&bind_value, &dest_value, &direction, con_status_map).await;
             }
         }
     });

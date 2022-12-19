@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 
 use crate::proxy_socks5;
 
-pub async fn serve_ws_to_tcp(
+pub async fn serve_server_side(
     bind_location: &str,
     dest_location: &str,
     dir: &Direction,
@@ -501,7 +501,7 @@ async fn ws_to_tcp_task(
     (tcp_write, ws_read)
 }
 
-pub async fn serve_tcp_to_ws(
+pub async fn serve_client_side(
     bind_location: &str,
     dest_location: &str,
     dir: &Direction,
@@ -614,10 +614,10 @@ pub async fn serve_separate(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match dir {
         Direction::ServerSide => {
-            serve_ws_to_tcp(bind_location, dest_location, dir, con_status_map.clone()).await
+            serve_server_side(bind_location, dest_location, dir, con_status_map.clone()).await
         }
         Direction::ClientSide => {
-            serve_tcp_to_ws(bind_location, dest_location, dir, con_status_map.clone()).await
+            serve_client_side(bind_location, dest_location, dir, con_status_map.clone()).await
         }
     }
 }
