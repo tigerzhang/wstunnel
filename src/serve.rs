@@ -277,7 +277,7 @@ async fn handle_tcp_incoming_task(
 ) -> (Arc<tokio::sync::Mutex<OwnedReadHalf>>, Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>, bool) {
     let mut need_close = true;
     let mut buf = vec![0; 1024 * 1024];
-    let mut need_init_state = true;
+    let mut need_proxy_socks_protocol = true;
     loop {
         debug!("start tcp_to_ws_task loop");
         let tcp_read_clone = tcp_read.clone();
@@ -295,26 +295,26 @@ async fn handle_tcp_incoming_task(
                     }
                     Ok(n) => {
                         debug!("tcp read {} bytes", n);
-                        let mut ignore_to_next_packet = false;
+                        let mut not_forward_current_packet = false;
                         match dir {
                             Direction::ClientSide => {
-                                if need_init_state {
-                                    need_init_state = false;
+                                if need_proxy_socks_protocol {
+                                    need_proxy_socks_protocol = false;
                                     // handle client socks5 requests like a socks5 proxy
                                     let r = proxy_socks5::handle_client_socks5_greeting(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
                                     if r.is_ok() {
-                                        ignore_to_next_packet = true;
+                                        not_forward_current_packet = true;
                                     }
                                 }
                             }
                             Direction::ServerSide => {
                                 // sink the socks5 server greeting message [5, 0]
                                 // proxy_socks5::handle_server_socks5_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
-                                if need_init_state {
-                                    need_init_state = false;
+                                if need_proxy_socks_protocol {
+                                    need_proxy_socks_protocol = false;
                                     match proxy_socks5::handle_server_side_socks5_response(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await {
                                         Ok(_) => {
-                                            ignore_to_next_packet = true;
+                                            not_forward_current_packet = true;
                                         }
                                         Err(e) => {
                                             error!("Error handling server side socks5 response: {:?}", e);
@@ -323,7 +323,7 @@ async fn handle_tcp_incoming_task(
                                 }
                             }
                         }
-                        if ignore_to_next_packet == false && need_init_state == false {
+                        if not_forward_current_packet == false {
                             tcp_to_ws_debug(&buf, n, address2.clone()).await;
 
                             tcp_to_ws_status(con_status_map2.clone(), address2.clone(), tcp_remote_port, &buf, n).await;
@@ -409,7 +409,7 @@ async fn handle_ws_incoming_task(
     wait_for_socks_init_sender: Option<tokio::sync::mpsc::Sender<bool>>
 ) -> (Arc<Mutex<OwnedWriteHalf>>, Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>) {
     let wait_for_socks_init_sender_clone = wait_for_socks_init_sender.clone();
-    let mut init_state = true;
+    let mut need_proxy_socks_protocol = true;
     loop {
         let ws_read_clone = ws_read.clone();
         let ws_read_lock = ws_read_clone.lock().await;
@@ -430,10 +430,7 @@ async fn handle_ws_incoming_task(
                         break;
                     }
                 };
-                let mut ignore_to_next_packet = false;
-                if init_state == false {
-                    ignore_to_next_packet = false;
-                }
+                let mut not_forward_current_packet = false;
                 match data {
                     Message::Binary(ref x) => {
                         debug!("ws got {}", x.len());
@@ -441,20 +438,20 @@ async fn handle_ws_incoming_task(
                             Direction::ClientSide => {
                                 // handle client socks5 requests like a socks5 proxy
                                 // proxy_socks5::handle_client_socks5_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
-                                init_state = false;
+                                need_proxy_socks_protocol = false;
                             }
                             Direction::ServerSide => {
                                 // handle server socks5 requests like a socks5 client
-                                if init_state {
+                                if need_proxy_socks_protocol {
                                     match proxy_socks5::handle_server_side_socks5_request(&x, x.len(), &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await {
                                        Ok(_) => {
-                                            // ignore_to_next_packet = true;
+                                            not_forward_current_packet = false;
                                         }
                                         Err(_) => {
                                             error!("Failed to handle server socks5 request");
                                         }
                                     }
-                                    init_state = false;
+                                    need_proxy_socks_protocol = false;
                                     if let Some(ref sender) = wait_for_socks_init_sender_clone {
                                         debug!("send socks5 init done");
                                         let _ = sender.send(true).await;
@@ -462,8 +459,8 @@ async fn handle_ws_incoming_task(
                                 }
                             }
                         }
-                        debug!("ignore_to_next_packet {} init_state {}", ignore_to_next_packet, init_state);
-                        if ignore_to_next_packet == false && init_state == false {
+                        debug!("ws incoming not_forward_current_packet {} need_proxy_socks_protocol {}", not_forward_current_packet, need_proxy_socks_protocol);
+                        if not_forward_current_packet == false {
                             let addr = Arc::clone(&address1);
                             debug!("ws got {} bytes from {}", x.len(), addr.lock().await);
 
