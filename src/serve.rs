@@ -301,7 +301,7 @@ async fn handle_tcp_incoming_task(
                                 if need_init_state {
                                     need_init_state = false;
                                     // handle client socks5 requests like a socks5 proxy
-                                    let r = proxy_socks5::handle_client_socks5_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
+                                    let r = proxy_socks5::handle_client_socks5_greeting(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
                                     if r.is_ok() {
                                         ignore_to_next_packet = true;
                                     }

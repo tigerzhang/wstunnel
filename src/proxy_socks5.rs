@@ -9,7 +9,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::{client, Message};
 type Error = Box<dyn std::error::Error>;
 
-pub async fn handle_client_socks5_request(
+pub async fn handle_client_socks5_greeting (
     buf: &Vec<u8>,
     n: usize,
     tcp_read: &mut Arc<Mutex<OwnedReadHalf>>,
