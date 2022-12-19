@@ -87,7 +87,7 @@ pub async fn serve_server_side(
         let ws_write_arc_clone = ws_write_arc.clone();
 
         let task_ws_to_tcp = tokio::spawn(async move {
-            ws_to_tcp_task(&dir_clone_1, tcp_remote_port, tcp_read_arc_clone, tcp_write_clone, ws_read_clone, ws_write_arc_clone, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1, Some(wait_for_socks_init_sender)).await
+            handle_ws_incoming_task(&dir_clone_1, tcp_remote_port, tcp_read_arc_clone, tcp_write_clone, ws_read_clone, ws_write_arc_clone, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1, Some(wait_for_socks_init_sender)).await
         });
         let address2 = address.clone();
         let con_status_map2 = con_status_map_clone.clone();
@@ -102,7 +102,7 @@ pub async fn serve_server_side(
         let task_tcp_to_ws = tokio::spawn(async move {
             // let _ = wait_for_socks_init_receiver.recv().await;
             // debug!("wait_for_socks_init_receiver recv");
-            tcp_to_ws_task(&dir_clone_2, tcp_remote_port, tcp_read_arc_clone, tcp_write_clone_2, ws_read_clone_2, ws_write_arc_clone, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
+            handle_tcp_incoming_task(&dir_clone_2, tcp_remote_port, tcp_read_arc_clone, tcp_write_clone_2, ws_read_clone_2, ws_write_arc_clone, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
         });
 
         let dir_clone_3 = dir_clone.clone();
@@ -262,7 +262,7 @@ async fn tcp_to_ws_status(con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStat
     }
 }
 
-async fn tcp_to_ws_task(
+async fn handle_tcp_incoming_task(
     dir: &Direction,
     tcp_remote_port: u16,
     mut tcp_read: Arc<Mutex<OwnedReadHalf>>,
@@ -395,7 +395,7 @@ async fn ws_to_tcp_debug(x: &[u8]) {
     }
 }
 
-async fn ws_to_tcp_task(
+async fn handle_ws_incoming_task(
     dir: &Direction,
     tcp_remote_port: u16,
     mut tcp_read: Arc<Mutex<OwnedReadHalf>>,
@@ -580,7 +580,7 @@ pub async fn serve_client_side(
         let ws_write_arc_clone = ws_write_arc.clone();
 
         let task_ws_to_tcp = tokio::spawn(async move {
-            ws_to_tcp_task(&dir_clone_1, tcp_remote_port, tcp_read_arc_clone, tcp_write_arc_clone, ws_read_arc_clone, ws_write_arc_clone, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1, None).await
+            handle_ws_incoming_task(&dir_clone_1, tcp_remote_port, tcp_read_arc_clone, tcp_write_arc_clone, ws_read_arc_clone, ws_write_arc_clone, shutdown_from_ws_tx, shutdown_from_tcp_rx, address1, con_status_map1, None).await
         });
 
         let address2 = address.clone();
@@ -594,7 +594,7 @@ pub async fn serve_client_side(
         let ws_write_arc_clone = ws_write_arc.clone();
 
         let task_tcp_to_ws = tokio::spawn(async move {
-            tcp_to_ws_task(&dir_clone_2, tcp_remote_port, tcp_read_arc_clone, tcp_write_arc_clone, ws_read_arc_clone, ws_write_arc_clone, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
+            handle_tcp_incoming_task(&dir_clone_2, tcp_remote_port, tcp_read_arc_clone, tcp_write_arc_clone, ws_read_arc_clone, ws_write_arc_clone, shutdown_from_ws_rx, shutdown_from_tcp_tx, address, address2, con_status_map2).await
         });
 
         let dir_clone_3 = dir_clone.clone();
