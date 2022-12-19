@@ -9,7 +9,10 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::{client, Message};
 type Error = Box<dyn std::error::Error>;
 
-pub async fn handle_client_socks5_greeting (
+// proxy 5, 1, 0 request
+// 1. send 5, 1 response
+// 2. don't forward 5,1,0 reqeust to upstream
+pub async fn handle_client_socks5_greeting_request(
     buf: &Vec<u8>,
     n: usize,
     tcp_read: &mut Arc<Mutex<OwnedReadHalf>>,
@@ -39,6 +42,46 @@ pub async fn handle_client_socks5_greeting (
     Err(Error::from("ignored"))
 }
 
+// proxy connect request
+// 1. send 5, 0, 0, 1, 0, 0, 0, 0, 0, 0 response
+// 2. forward connect request to upstream
+//
+// example:
+// connect request [5, 1, 0, 3, 10, 103, 111, 111, 103, 108, 101, 46, 99, 111, 109, 0, 80]
+// response [5, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+//
+pub async fn handle_client_socks5_connect_request(
+    buf: &Vec<u8>,
+    n: usize,
+    tcp_read: &mut Arc<Mutex<OwnedReadHalf>>,
+    tcp_write: &mut Arc<Mutex<OwnedWriteHalf>>,
+    ws_read: &mut Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
+    ws_write: &mut Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>
+) -> Result<(), Box<dyn std::error::Error>> {
+    if buf.len() > 5 {
+        if buf[0] == 0x05 &&
+            buf[1] == 0x01 && // connect
+            buf[2] == 0x00 { // reserved
+            let mut valid_address = false;
+            if buf[3] == 0x01 {
+                // IPV4 address
+                valid_address = true;
+            } else if buf[3] == 0x03 {
+                // domain name
+                valid_address = true;
+            } else if buf[3] == 0x04 {
+                // IPV6 address
+                valid_address = true;
+            }
+            if valid_address {
+                // return response directly
+                tcp_write.lock().await.write_all([5, 0, 0, 1, 0, 0, 0, 0, 0, 0].as_ref()).await?;
+            }
+        }
+    }
+    return Ok(())
+}
+
 pub async fn handle_server_side_socks5_request(
     buf: &Vec<u8>,
     n: usize,
@@ -61,7 +104,7 @@ pub async fn handle_server_side_socks5_request(
     Ok(())
 }
 
-pub async fn handle_server_side_socks5_response(
+pub async fn handle_server_side_socks5_greeting_response(
     buf: &Vec<u8>,
     n: usize,
     tcp_read: &mut Arc<Mutex<OwnedReadHalf>>,
@@ -69,7 +112,7 @@ pub async fn handle_server_side_socks5_response(
     ws_read: &mut Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
     ws_write: &mut Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>
 ) -> Result<(), Box<dyn std::error::Error>> {
-    debug!("handle_server_side_socks5_response");
+    debug!("handle_server_side_socks5_greeting_response");
     if n == 2 && buf[0] == 5 && buf[1] == 0 {
         debug!("server_response: [5, 1]");
     } else {
@@ -80,6 +123,24 @@ pub async fn handle_server_side_socks5_response(
     // let mut seq = [0 as u8; 10];
 
     // tcp_read.lock().await.read_exact(&mut seq).await?;
+
+    Ok(())
+}
+
+pub async fn handle_server_side_socks5_connect_response(
+    buf: &Vec<u8>,
+    n: usize,
+    tcp_read: &mut Arc<Mutex<OwnedReadHalf>>,
+    tcp_write: &mut Arc<Mutex<OwnedWriteHalf>>,
+    ws_read: &mut Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
+    ws_write: &mut Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>
+) -> Result<(), Box<dyn std::error::Error>> {
+    debug!("handle_server_side_socks5_response");
+    if n == 10 && buf[0] == 5 && buf[1] == 0 {
+        debug!("server_response: {:?}", buf.split_at(n).0);
+    } else {
+        return Err(Error::from("socks5 server connect response [5, 0, 0, 1, 0, 0, 0, 0, 0, 0] not received"));
+    }
 
     Ok(())
 }

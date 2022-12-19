@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::mem::take;
 use std::sync::{Arc};
 use futures_util::SinkExt;
 use log::{debug, error, info, trace, warn};
@@ -262,6 +261,20 @@ async fn tcp_to_ws_status(con_status_map2: Arc<Mutex<HashMap<u16, ConnectionStat
     }
 }
 
+#[derive(PartialEq)]
+enum ClientSideSocksProxyState {
+    Init,
+    GreetingProxyDone,
+    ConnectProxyDone
+}
+
+#[derive(PartialEq)]
+enum ServerSideSocksProxyState {
+    Init,
+    GreetingProxyDone,
+    ConnectProxyDone
+}
+
 async fn handle_tcp_incoming_task(
     dir: &Direction,
     tcp_remote_port: u16,
@@ -277,7 +290,8 @@ async fn handle_tcp_incoming_task(
 ) -> (Arc<tokio::sync::Mutex<OwnedReadHalf>>, Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>, bool) {
     let mut need_close = true;
     let mut buf = vec![0; 1024 * 1024];
-    let mut need_proxy_socks_protocol = true;
+    let mut client_side_socks_proxy_state = ClientSideSocksProxyState::Init;
+    let mut server_side_socks_proxy_state = ServerSideSocksProxyState::Init;
     loop {
         debug!("start tcp_to_ws_task loop");
         let tcp_read_clone = tcp_read.clone();
@@ -298,28 +312,49 @@ async fn handle_tcp_incoming_task(
                         let mut not_forward_current_packet = false;
                         match dir {
                             Direction::ClientSide => {
-                                if need_proxy_socks_protocol {
-                                    need_proxy_socks_protocol = false;
+                                if client_side_socks_proxy_state == ClientSideSocksProxyState::Init {
                                     // handle client socks5 requests like a socks5 proxy
-                                    let r = proxy_socks5::handle_client_socks5_greeting(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
+                                    let r = proxy_socks5::handle_client_socks5_greeting_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
                                     if r.is_ok() {
+                                        // drop client greeting request
                                         not_forward_current_packet = true;
                                     }
+                                    client_side_socks_proxy_state = ClientSideSocksProxyState::ConnectProxyDone;
+                                } else if client_side_socks_proxy_state == ClientSideSocksProxyState::ConnectProxyDone {
+                                    // handle client socks5 requests like a socks5 proxy
+                                    let r = proxy_socks5::handle_client_socks5_connect_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
+                                    if r.is_ok() {
+                                        // connect request need to forward to server
+                                        not_forward_current_packet = false;
+                                    }
+                                    client_side_socks_proxy_state = ClientSideSocksProxyState::ConnectProxyDone;
                                 }
                             }
                             Direction::ServerSide => {
                                 // sink the socks5 server greeting message [5, 0]
                                 // proxy_socks5::handle_server_socks5_request(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await;
-                                if need_proxy_socks_protocol {
-                                    need_proxy_socks_protocol = false;
-                                    match proxy_socks5::handle_server_side_socks5_response(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await {
+                                if server_side_socks_proxy_state == ServerSideSocksProxyState::Init {
+                                    match proxy_socks5::handle_server_side_socks5_greeting_response(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await {
                                         Ok(_) => {
+                                            // drop server greeting response
                                             not_forward_current_packet = true;
                                         }
                                         Err(e) => {
                                             error!("Error handling server side socks5 response: {:?}", e);
                                         }
                                     }
+                                    server_side_socks_proxy_state = ServerSideSocksProxyState::ConnectProxyDone;
+                                } else if server_side_socks_proxy_state == ServerSideSocksProxyState::ConnectProxyDone {
+                                    match proxy_socks5::handle_server_side_socks5_connect_response(&buf, n, &mut tcp_read, &mut tcp_write, &mut ws_read, &mut ws_write).await {
+                                        Ok(_) => {
+                                            // drop server greeting response
+                                            not_forward_current_packet = true;
+                                        }
+                                        Err(e) => {
+                                            error!("Error handling server side socks5 response: {:?}", e);
+                                        }
+                                    }
+                                    server_side_socks_proxy_state = ServerSideSocksProxyState::ConnectProxyDone;
                                 }
                             }
                         }
