@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use futures_util::stream::{SplitSink, SplitStream};
-use log::debug;
+use log::{debug, info};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
@@ -37,6 +37,7 @@ pub async fn handle_client_socks5_greeting_request(
         let server_greeting = [0x05, 0x00];
         debug!("server_greeting: {:?}", server_greeting);
         tcp_write.lock().await.write_all(&server_greeting).await?;
+        info!("Proxy client greeting done");
         return Ok(());
     }
     Err(Error::from("ignored"))
@@ -74,6 +75,7 @@ pub async fn handle_client_socks5_connect_request(
                 valid_address = true;
             }
             if valid_address {
+                info!("Handle client connect request. Response client directly");
                 // return response directly
                 tcp_write.lock().await.write_all([5, 0, 0, 1, 0, 0, 0, 0, 0, 0].as_ref()).await?;
             }
@@ -94,6 +96,7 @@ pub async fn handle_server_side_socks5_request(
     // send [5, 1, 0] to server like a socks5 client
     let client_greeting = [0x05, 0x01, 0x00];
     debug!("client_greeting: {:?}", client_greeting);
+    info!("Send client greeting to server");
     tcp_write.lock().await.write_all(&client_greeting).await?;
     // server to client [5, 0]
     // read exactly 2 bytes: [5, 0]
@@ -124,6 +127,7 @@ pub async fn handle_server_side_socks5_greeting_response(
 
     // tcp_read.lock().await.read_exact(&mut seq).await?;
 
+    info!("Proxy server greeting done");
     Ok(())
 }
 
@@ -142,5 +146,6 @@ pub async fn handle_server_side_socks5_connect_response(
         return Err(Error::from("socks5 server connect response [5, 0, 0, 1, 0, 0, 0, 0, 0, 0] not received"));
     }
 
+    info!("Got server connect response");
     Ok(())
 }
